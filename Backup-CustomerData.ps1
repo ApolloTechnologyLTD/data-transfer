@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Backup & Restore)
+    Apollo Technology Data Migration Utility (Smart Restore & Backup)
 .DESCRIPTION
-    Menu-driven utility to Backup data to external drive OR Restore data from external drive.
-    Includes auto-elevation and Demo Mode.
+    Menu-driven utility to Backup data or Restore data.
+    Restore mode searches for the ticket number automatically.
 #>
 
 # --- 0. CONFIGURATION ---
@@ -51,13 +51,12 @@ function Run-Robocopy {
     )
 
     if ($DemoMode) {
-        Write-Host "   [DEMO] Processing: $Source -> $Destination" -ForegroundColor Magenta
-        # Create Dummy Dest
+        # Create Dummy Dest for visualization
         if (!(Test-Path $Destination)) { New-Item -ItemType Directory -Path $Destination -Force | Out-Null }
-        # Create Dummy File
-        New-Item -ItemType File -Path "$Destination\DEMO_TRANSFER.txt" -Value "Simulated copy from $Source" -Force | Out-Null
+        
+        Write-Host "   [DEMO] Processing: $Source" -ForegroundColor Magenta
         Add-Content -Path $LogFile -Value "DEMO COPY: $Source -> $Destination"
-        Start-Sleep -Milliseconds 200
+        Start-Sleep -Milliseconds 100
     }
     else {
         if (Test-Path $Source) {
@@ -91,9 +90,10 @@ switch ($MenuSelection) {
 # --- 4. INPUT COLLECTION ---
 Show-Header
 Write-Host "`n[ $Mode CONFIGURATION ]" -ForegroundColor Yellow
+
+# Shared Inputs
 $EngineerName = Read-Host "   > Enter Engineer Name"
 $TicketNumber = Read-Host "   > Enter Ticket Number"
-$CustomerName = Read-Host "   > Enter Customer Full Name"
 
 # Drive Selection
 Write-Host "`n[ DRIVE SELECTION ]" -ForegroundColor Yellow
@@ -109,22 +109,56 @@ if (!(Test-Path "$($DriveLetter):")) {
     Exit
 }
 
-# Define Paths
-$ExternalStorePath = "$($DriveLetter):\${TicketNumber}-$($CustomerName)"
+# --- 5. PATH LOGIC & SEARCH ---
 $UserProfile = $env:USERPROFILE
+
+if ($Mode -eq "BACKUP") {
+    # For Backup, we MUST ask for the customer name to create the folder
+    $CustomerName = Read-Host "   > Enter Customer Full Name"
+    $ExternalStorePath = "$($DriveLetter):\${TicketNumber}-$($CustomerName)"
+    
+} elseif ($Mode -eq "RESTORE") {
+    # For Restore, we SEARCH for the ticket number
+    Write-Host "`n[ SEARCHING FOR BACKUP ]" -ForegroundColor Yellow
+    Write-Host "   Searching drive $DriveLetter for Ticket $TicketNumber..." -ForegroundColor DarkGray
+    
+    # Search for folder starting with TicketNumber
+    $SearchPath = "$($DriveLetter):\${TicketNumber}-*"
+    $FoundFolders = Get-ChildItem -Path $SearchPath -Directory -ErrorAction SilentlyContinue
+    
+    if ($null -eq $FoundFolders -or $FoundFolders.Count -eq 0) {
+        Write-Host "`n[ ERROR ] NO BACKUP FOUND" -ForegroundColor Red
+        Write-Host "   Could not find a folder starting with '$TicketNumber' on drive $DriveLetter"
+        Pause
+        Exit
+    } elseif ($FoundFolders.Count -gt 1) {
+        Write-Host "`n[ ERROR ] MULTIPLE BACKUPS FOUND" -ForegroundColor Red
+        Write-Host "   Found multiple folders for this ticket. Please check manually:"
+        $FoundFolders | ForEach-Object { Write-Host "   - $($_.Name)" }
+        Pause
+        Exit
+    }
+
+    # Success - One folder found
+    $ExternalStorePath = $FoundFolders.FullName
+    $CustomerName = $FoundFolders.Name # Use the folder name as the customer name reference
+    Write-Host "   FOUND: $CustomerName" -ForegroundColor Green
+}
+
 $LogPath = "$ExternalStorePath\_Logs"
 
-# --- 5. PREPARATION & CONFIRMATION ---
+# --- 6. CONFIRMATION ---
 Show-Header
 Write-Host "`n[ CONFIRMATION ]" -ForegroundColor Yellow
 Write-Host "   Operation:   $Mode" -ForegroundColor $(If ($Mode -eq 'BACKUP') {'Green'} Else {'Cyan'})
-Write-Host "   Customer:    $CustomerName (Ticket: $TicketNumber)"
+Write-Host "   Ticket:      $TicketNumber"
+Write-Host "   Customer:    $CustomerName" -ForegroundColor White
 if ($Mode -eq "BACKUP") {
-    Write-Host "   Source:      THIS COMPUTER ($UserProfile)"
-    Write-Host "   Destination: EXTERNAL DRIVE ($ExternalStorePath)"
+    Write-Host "   Source:      THIS COMPUTER"
+    Write-Host "   Destination: $ExternalStorePath"
 } else {
-    Write-Host "   Source:      EXTERNAL DRIVE ($ExternalStorePath)"
-    Write-Host "   Destination: THIS COMPUTER ($UserProfile)"
+    Write-Host "   Source:      $ExternalStorePath"
+    Write-Host "   Destination: THIS COMPUTER"
 }
 
 Write-Host "---------------------------------------------------------------------------------"
@@ -137,7 +171,7 @@ if (!(Test-Path $LogPath)) { New-Item -ItemType Directory -Path $LogPath -Force 
 $MainLog = "$LogPath\${Mode}_Log.txt"
 Add-Content -Path $MainLog -Value "Operation: $Mode | Date: $(Get-Date)"
 
-# Stop Processes (Required for both backup and restore to avoid file locks)
+# Stop Processes
 Write-Host "`n[ SYSTEM PREP ]" -ForegroundColor Yellow
 if (-not $DemoMode) {
     Write-Host "Stopping Chrome and Outlook..." -ForegroundColor Gray
@@ -148,11 +182,10 @@ if (-not $DemoMode) {
     Write-Host "Simulating Process Stop..." -ForegroundColor DarkGray
 }
 
-# --- 6. EXECUTION ENGINE ---
+# --- 7. EXECUTION ENGINE ---
 Write-Host "`n[ STARTING TRANSFER ]" -ForegroundColor Yellow
 
-# Define the folders to process using a HashTable for clean mapping
-# Key = Local Folder Name, Value = Folder Name on External Drive
+# Map Local Folders to External Folders
 $FoldersMap = @{
     "Desktop"   = "Desktop"
     "Documents" = "Documents"
@@ -168,21 +201,18 @@ $FoldersMap = @{
 foreach ($LocalSubPath in $FoldersMap.Keys) {
     $ExternalSubName = $FoldersMap[$LocalSubPath]
     
-    # Calculate Full Paths based on Mode
     $LocalFull  = "$UserProfile\$LocalSubPath"
     $ExternalFull = "$ExternalStorePath\$ExternalSubName"
 
     if ($Mode -eq "BACKUP") {
-        # Source = Local, Dest = External
         Run-Robocopy -Source $LocalFull -Destination $ExternalFull -LogFile $MainLog
     }
     elseif ($Mode -eq "RESTORE") {
-        # Source = External, Dest = Local
         Run-Robocopy -Source $ExternalFull -Destination $LocalFull -LogFile $MainLog
     }
 }
 
-# --- 7. REPORT & FINISH ---
+# --- 8. REPORT & FINISH ---
 $ReportFile = "$ExternalStorePath\${Mode}_Report.txt"
 $ReportContent = @"
 APOLLO TECHNOLOGY - $Mode REPORT
@@ -191,6 +221,7 @@ Date:           $(Get-Date)
 Engineer:       $EngineerName
 Ticket:         $TicketNumber
 Operation:      $Mode
+Folder Used:    $ExternalStorePath
 Status:         COMPLETED
 =========================================
 "@
@@ -198,5 +229,5 @@ Set-Content -Path $ReportFile -Value $ReportContent
 
 Write-Host "`n[ COMPLETE ]" -ForegroundColor Green
 Write-Host "Operation finished."
-Write-Host "Log saved to: $MainLog"
+Write-Host "Report saved to: $ReportFile"
 Pause
