@@ -219,7 +219,7 @@ if (-not $DemoMode) {
 Write-Host "`n[ STARTING TRANSFER ]" -ForegroundColor Yellow
 
 # Initialize Map
-$FoldersMap = @Ordered{
+$FoldersMap = [ordered]@{
     "Desktop"   = "Desktop"
     "Documents" = "Documents"
     "Downloads" = "Downloads"
