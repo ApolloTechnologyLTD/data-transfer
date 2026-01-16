@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.2
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.3
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
-    - FIXED: AppData\Local, Roaming, and Edge now restore correctly.
+    - SILENT DETECTION: Extended paths (Edge, AppData) are restored without console clutter.
     - AUTO-INSTALLS Google Chrome if missing during Restore.
     - BACKUPS Edge, Chrome, Firefox, Opera, Brave, and full AppData.
     - GENERATES HTML/PDF Reports.
@@ -79,7 +79,6 @@ function Run-Robocopy {
     )
 
     # Standard Exclusions for AppData to avoid loops/bloat
-    # Note: This prevents the huge "Temp" folder inside AppData\Local from being copied
     $Excludes = @("Temp", "Temporary Internet Files", "Application Data", "History", "Cookies")
 
     if ($DemoMode) {
@@ -210,7 +209,7 @@ if (-not $DemoMode) {
     Start-Sleep -Seconds 2
 }
 
-# --- 7. MAPPING & EXECUTION (FIXED) ---
+# --- 7. MAPPING & EXECUTION ---
 Write-Host "`n[ STARTING TRANSFER ]" -ForegroundColor Yellow
 
 # Initialize Map (Standard Folders)
@@ -236,7 +235,7 @@ $ExtendedPaths = @{
     "AppData\Local"                               = "AppData_Local"
 }
 
-# Process Extended Paths (Add to Map if they exist in Source)
+# Process Extended Paths (Silent Detection)
 foreach ($RelPath in $ExtendedPaths.Keys) {
     $ExternalName = $ExtendedPaths[$RelPath]
     
@@ -245,7 +244,7 @@ foreach ($RelPath in $ExtendedPaths.Keys) {
         if (Test-Path "$UserProfile\$RelPath") {
             if (-not $FoldersMap.Contains($RelPath)) {
                 $FoldersMap[$RelPath] = $ExternalName
-                Write-Host "   + Detected for Backup: $RelPath" -ForegroundColor DarkGray
+                # Write-Host removed for silence
             }
         }
     }
@@ -255,7 +254,7 @@ foreach ($RelPath in $ExtendedPaths.Keys) {
             # Special check to prevent duplicates if already mapped
             if (-not $FoldersMap.Contains($RelPath)) {
                 $FoldersMap[$RelPath] = $ExternalName
-                Write-Host "   + Detected for Restore: $ExternalName" -ForegroundColor DarkGray
+                # Write-Host removed for silence
             }
         }
     }
