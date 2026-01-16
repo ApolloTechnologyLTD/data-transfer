@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.6
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.7
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
-    - UPDATED: Header now includes Admin Notice, Credits, and Power Status.
+    - UPDATED v2.7: Added Visual Progress Bar during transfer.
     - INCLUDES: Anti-Sleep, Anti-Freeze (QuickEdit), Email Reports, Input Validation.
     - SILENT DETECTION for Edge/AppData.
     - AUTO-INSTALLS Google Chrome if missing.
@@ -12,7 +12,7 @@
 # --- 0. CONFIGURATION ---
 $DemoMode = $false
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
-$Version = "2.6"
+$Version = "2.7"
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -93,8 +93,7 @@ function Show-Header {
     Write-Host "`n   DATA MIGRATION & BACKUP TOOL" -ForegroundColor White
     Write-Host "=================================================================================" -ForegroundColor DarkGray
 
-    # --- ADDED: NOTICE & DETAILS ---
-    # Re-check admin status for the header display
+    # --- NOTICE & DETAILS ---
     $Current = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     $IsAdminHeader = $Current.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
@@ -155,7 +154,7 @@ function Run-Robocopy {
     }
     else {
         if (Test-Path $Source) {
-            Write-Host "   Copying: $Source" -ForegroundColor Green
+            # Note: /NP is kept to keep logs clean, but we use the outer Progress Bar for visuals
             robocopy $Source $Destination /E /XO /R:1 /W:1 /NP /LOG+:"$LogFile" /TEE /XD $Excludes | Out-Null
             return "Completed"
         } else {
@@ -327,7 +326,7 @@ $ExtendedPaths = @{
     "AppData\Local"                               = "AppData_Local"
 }
 
-# Silent Detection
+# Silent Detection (Populate Map with detected paths)
 foreach ($RelPath in $ExtendedPaths.Keys) {
     $ExternalName = $ExtendedPaths[$RelPath]
     
@@ -343,25 +342,60 @@ foreach ($RelPath in $ExtendedPaths.Keys) {
     }
 }
 
-# Execution Loop
-$ReportItems = @()
+# --- VALIDATE LIST FOR PROGRESS BAR ---
+# We create a list of items that *actually exist* so the progress bar is accurate.
+$ValidTransferItems = @()
+Write-Host "   Verifying copy list..." -ForegroundColor DarkGray
 
 foreach ($LocalSubPath in $FoldersMap.Keys) {
     $ExternalSubName = $FoldersMap[$LocalSubPath]
     $LocalFull  = "$UserProfile\$LocalSubPath"
     $ExternalFull = "$ExternalStorePath\$ExternalSubName"
 
+    $ShouldAdd = $false
     if ($Mode -eq "BACKUP") {
-        $Result = Run-Robocopy -Source $LocalFull -Destination $ExternalFull -LogFile $MainLog
-        $ReportItems += [PSCustomObject]@{ Item = $LocalSubPath; Status = $Result }
+        if (Test-Path $LocalFull) { $ShouldAdd = $true }
+    } elseif ($Mode -eq "RESTORE") {
+        if (Test-Path $ExternalFull) { $ShouldAdd = $true }
     }
-    elseif ($Mode -eq "RESTORE") {
-        if (Test-Path $ExternalFull) {
-            $Result = Run-Robocopy -Source $ExternalFull -Destination $LocalFull -LogFile $MainLog
-            $ReportItems += [PSCustomObject]@{ Item = $ExternalSubName; Status = $Result }
+
+    if ($ShouldAdd) {
+        $ValidTransferItems += [PSCustomObject]@{
+            LocalPath = $LocalSubPath
+            ExtName   = $ExternalSubName
+            Src       = if ($Mode -eq "BACKUP") { $LocalFull } else { $ExternalFull }
+            Dst       = if ($Mode -eq "BACKUP") { $ExternalFull } else { $LocalFull }
         }
     }
 }
+
+# Execution Loop with Progress Bar
+$ReportItems = @()
+$TotalItems = $ValidTransferItems.Count
+$CurrentItemIndex = 0
+
+foreach ($Task in $ValidTransferItems) {
+    $CurrentItemIndex++
+    
+    # Calculate Percentage
+    $PercentComplete = ($CurrentItemIndex / $TotalItems) * 100
+    
+    # Update Progress Bar
+    Write-Progress -Activity "Migrating Data ($Mode)" -Status "Processing Folder $CurrentItemIndex of $TotalItems : $($Task.LocalPath)" -PercentComplete $PercentComplete
+    
+    # Visual Output to Console
+    Write-Host "   [$CurrentItemIndex / $TotalItems] Processing: $($Task.LocalPath)" -ForegroundColor Green -NoNewline
+    Write-Host " ..." -ForegroundColor Gray
+
+    # Run Copy
+    $Result = Run-Robocopy -Source $Task.Src -Destination $Task.Dst -LogFile $MainLog
+    
+    # Report
+    $ReportItems += [PSCustomObject]@{ Item = if ($Mode -eq "BACKUP") {$Task.LocalPath} else {$Task.ExtName}; Status = $Result }
+}
+
+# Close Progress Bar
+Write-Progress -Activity "Migrating Data ($Mode)" -Completed
 
 # --- 8. REPORT GENERATION ---
 Write-Host "`n[ REPORT GENERATION ]" -ForegroundColor Yellow
@@ -412,7 +446,7 @@ $HtmlContent = @"
 <div class="section">
     <table><thead><tr><th>Data Folder</th><th>Status</th></tr></thead><tbody>$TransferTableRows</tbody></table>
 </div>
-<p style="text-align:center; font-size:0.8em; color:#888; margin-top:50px;">&copy; $(Get-Date -Format yyyy) by Apollo Technology.</p>
+<p style="text-align:center; font-size:0.8em; color:#888; margin-top:50px;">&copy; $(Get-Date -Format yyyy) by Apollo Technology. All rights reserved. Created by Apollo Technology (Lewis Wiltshire)</p>
 </body>
 </html>
 "@
