@@ -1,11 +1,10 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.5
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.6
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
-    - UPDATED: Added Disable Quick-Edit (Anti-Freeze) and Anti-Sleep mode.
-    - UPDATED: Added Input Verification Loop (Enter = Yes, N = Restart Input).
-    - EMAIL REPORTING ENABLED.
+    - UPDATED: Header now includes Admin Notice, Credits, and Power Status.
+    - INCLUDES: Anti-Sleep, Anti-Freeze (QuickEdit), Email Reports, Input Validation.
     - SILENT DETECTION for Edge/AppData.
     - AUTO-INSTALLS Google Chrome if missing.
 #>
@@ -13,6 +12,7 @@
 # --- 0. CONFIGURATION ---
 $DemoMode = $false
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
+$Version = "2.6"
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -24,7 +24,9 @@ $UseSSL       = $true
 
 # --- 1. AUTO-ELEVATE TO ADMINISTRATOR ---
 $CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (!($CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+$isAdmin = $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (!($isAdmin)) {
     Write-Host "Requesting Administrator privileges..." -ForegroundColor Yellow
     try {
         Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
@@ -37,7 +39,7 @@ if (!($CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Admini
     }
 }
 
-# --- 2. PREVENT FREEZING & SLEEPING (FROM HEALTH CHECK) ---
+# --- 2. PREVENT FREEZING & SLEEPING ---
 # Disable Quick-Edit (Prevents freezing on click)
 $consoleFuncs = @"
 using System;
@@ -90,6 +92,22 @@ function Show-Header {
     Write-Host $Banner -ForegroundColor Cyan
     Write-Host "`n   DATA MIGRATION & BACKUP TOOL" -ForegroundColor White
     Write-Host "=================================================================================" -ForegroundColor DarkGray
+
+    # --- ADDED: NOTICE & DETAILS ---
+    # Re-check admin status for the header display
+    $Current = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    $IsAdminHeader = $Current.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+    if ($IsAdminHeader) { 
+        Write-Host "        [NOTICE] Running in Elevated Permissions" -ForegroundColor Red 
+    } elseif ($DemoMode) {
+        Write-Host "      [NOTICE] Running as Standard User" -ForegroundColor Yellow 
+    }
+
+    Write-Host "        Created by Lewis Wiltshire, Version $Version" -ForegroundColor Yellow
+    Write-Host "      [POWER] Sleep Mode & Screen Timeout Blocked." -ForegroundColor DarkGray
+    # -------------------------------
+
     if ($DemoMode) {
         Write-Host "`n   *** DEMO MODE ACTIVE - NO REAL DATA WILL BE COPIED ***" -ForegroundColor Magenta
     }
@@ -166,7 +184,6 @@ switch ($MenuSelection) {
 }
 
 # --- 5. INPUT COLLECTION LOOP ---
-# This loop allows the user to restart if they make a mistake
 do {
     Show-Header
     Write-Host "`n[ $Mode CONFIGURATION ]" -ForegroundColor Yellow
@@ -186,7 +203,7 @@ do {
         Write-Error "Drive $($DriveLetter): not found."
         Write-Host "Restarting input..." -ForegroundColor Red
         Start-Sleep -Seconds 2
-        Continue # Restarts the loop
+        Continue 
     }
 
     # PATH LOGIC & SEARCH
@@ -260,7 +277,6 @@ do {
 } while ($Confirm -match "N")
 
 # --- 6. EXECUTION PREP ---
-# Check Chrome (RESTORE ONLY) - moved after confirmation to avoid loop repetition
 if ($Mode -eq "RESTORE") {
     $ChromePath64 = "C:\Program Files\Google\Chrome\Application\chrome.exe"
     $ChromePath32 = "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
