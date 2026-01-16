@@ -10,7 +10,7 @@
 
 # --- 0. CONFIGURATION ---
 $DemoMode = $false
-$LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
+$LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/data-transfer/main/Apollo%20Cropped.png"
 $Version = "2.7"
 
 # --- EMAIL SETTINGS ---
