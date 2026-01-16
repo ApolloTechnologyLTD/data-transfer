@@ -1,18 +1,17 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.6
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.9
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
-    - UPDATED: Header now includes Admin Notice, Credits, and Power Status.
-    - INCLUDES: Anti-Sleep, Anti-Freeze (QuickEdit), Email Reports, Input Validation.
-    - SILENT DETECTION for Edge/AppData.
-    - AUTO-INSTALLS Google Chrome if missing.
+    - FIXED: Robocopy now handles paths with spaces correctly (Quotes added).
+    - FIXED: Restore destination mapping logic.
+    - INCLUDES: Progress Bar, Admin Notice, Anti-Sleep, Email Reports.
 #>
 
 # --- 0. CONFIGURATION ---
 $DemoMode = $false
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
-$Version = "2.6"
+$Version = "2.9"
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -40,7 +39,7 @@ if (!($isAdmin)) {
 }
 
 # --- 2. PREVENT FREEZING & SLEEPING ---
-# Disable Quick-Edit (Prevents freezing on click)
+# Disable Quick-Edit
 $consoleFuncs = @"
 using System;
 using System.Runtime.InteropServices;
@@ -93,8 +92,6 @@ function Show-Header {
     Write-Host "`n   DATA MIGRATION & BACKUP TOOL" -ForegroundColor White
     Write-Host "=================================================================================" -ForegroundColor DarkGray
 
-    # --- ADDED: NOTICE & DETAILS ---
-    # Re-check admin status for the header display
     $Current = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     $IsAdminHeader = $Current.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
@@ -106,7 +103,6 @@ function Show-Header {
 
     Write-Host "        Created by Lewis Wiltshire, Version $Version" -ForegroundColor Yellow
     Write-Host "      [POWER] Sleep Mode & Screen Timeout Blocked." -ForegroundColor DarkGray
-    # -------------------------------
 
     if ($DemoMode) {
         Write-Host "`n   *** DEMO MODE ACTIVE - NO REAL DATA WILL BE COPIED ***" -ForegroundColor Magenta
@@ -154,9 +150,13 @@ function Run-Robocopy {
         return "Success (Demo)"
     }
     else {
+        # Create Destination if missing (Robocopy does this, but being safe)
+        if (!(Test-Path $Destination)) { New-Item -ItemType Directory -Path $Destination -Force | Out-Null }
+
         if (Test-Path $Source) {
             Write-Host "   Copying: $Source" -ForegroundColor Green
-            robocopy $Source $Destination /E /XO /R:1 /W:1 /NP /LOG+:"$LogFile" /TEE /XD $Excludes | Out-Null
+            # FIX: Added QUOTES around Source and Dest to handle spaces
+            robocopy "$Source" "$Destination" /E /XO /R:1 /W:1 /LOG+:"$LogFile" /TEE /XD $Excludes | Out-Null
             return "Completed"
         } else {
             Write-Host "   Skipping: Source not found ($Source)" -ForegroundColor DarkGray
@@ -301,8 +301,8 @@ if (-not $DemoMode) {
     Start-Sleep -Seconds 2
 }
 
-# --- 7. MAPPING & EXECUTION ---
-Write-Host "`n[ STARTING TRANSFER ]" -ForegroundColor Yellow
+# --- 7. MAPPING & SIZE CALCULATION ---
+Write-Host "`n[ ANALYZING DATA ]" -ForegroundColor Yellow
 
 # Initialize Map
 $FoldersMap = [ordered]@{
@@ -327,43 +327,111 @@ $ExtendedPaths = @{
     "AppData\Local"                               = "AppData_Local"
 }
 
-# Silent Detection
-foreach ($RelPath in $ExtendedPaths.Keys) {
-    $ExternalName = $ExtendedPaths[$RelPath]
+# 1. Build The Transfer Queue (Identify Valid Folders)
+$TransferQueue = @()
+
+# Helper to check and add to queue
+function Add-ToQueue {
+    param($SourcePath, $DestName)
+    if (Test-Path $SourcePath) {
+        # Check for duplicate DestName to avoid logic errors
+        $Exists = $TransferQueue | Where-Object { $_.DestName -eq $DestName }
+        if (-not $Exists) {
+            $TransferQueue += [PSCustomObject]@{
+                SourcePath = $SourcePath
+                DestName   = $DestName
+                SizeBytes  = 0
+            }
+        }
+    }
+}
+
+# Process Standard Folders
+foreach ($Key in $FoldersMap.Keys) {
+    if ($Mode -eq "BACKUP") { Add-ToQueue -SourcePath "$UserProfile\$Key" -DestName $FoldersMap[$Key] }
+    elseif ($Mode -eq "RESTORE") { Add-ToQueue -SourcePath "$ExternalStorePath\$($FoldersMap[$Key])" -DestName $FoldersMap[$Key] }
+}
+
+# Process Extended Folders
+foreach ($Key in $ExtendedPaths.Keys) {
+    $ExtName = $ExtendedPaths[$Key]
+    if ($Mode -eq "BACKUP") { Add-ToQueue -SourcePath "$UserProfile\$Key" -DestName $ExtName }
+    elseif ($Mode -eq "RESTORE") { Add-ToQueue -SourcePath "$ExternalStorePath\$ExtName" -DestName $ExtName }
+}
+
+# 2. Calculate Total Size (Pre-Scan)
+Write-Host "   Calculating total size... (This may take a moment)" -ForegroundColor Cyan
+$TotalBytesToTransfer = 0
+
+for ($i = 0; $i -lt $TransferQueue.Count; $i++) {
+    $Item = $TransferQueue[$i]
+    $pct = [math]::Round(($i / $TransferQueue.Count) * 100)
+    Write-Progress -Activity "Calculating Size" -Status "Scanning $($Item.DestName)..." -PercentComplete $pct
     
-    if ($Mode -eq "BACKUP") {
-        if (Test-Path "$UserProfile\$RelPath") {
-            if (-not $FoldersMap.Contains($RelPath)) { $FoldersMap[$RelPath] = $ExternalName }
-        }
+    if ($DemoMode) {
+        $Item.SizeBytes = 1073741824 # 1GB Dummy
+    } else {
+        try {
+            $Measure = Get-ChildItem -Path $Item.SourcePath -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
+            if ($Measure.Sum) { $Item.SizeBytes = $Measure.Sum }
+        } catch { $Item.SizeBytes = 0 }
     }
-    elseif ($Mode -eq "RESTORE") {
-        if (Test-Path "$ExternalStorePath\$ExternalName") {
-            if (-not $FoldersMap.Contains($RelPath)) { $FoldersMap[$RelPath] = $ExternalName }
-        }
-    }
+    $TotalBytesToTransfer += $Item.SizeBytes
 }
+Write-Progress -Activity "Calculating Size" -Completed
 
-# Execution Loop
+$TotalGB = [math]::Round($TotalBytesToTransfer / 1GB, 2)
+Write-Host "   Total Data to Transfer: $TotalGB GB" -ForegroundColor Green
+Start-Sleep -Seconds 2
+
+# --- 8. EXECUTION LOOP WITH PROGRESS BAR ---
+Write-Host "`n[ STARTING TRANSFER ]" -ForegroundColor Yellow
 $ReportItems = @()
+$ProcessedBytes = 0
 
-foreach ($LocalSubPath in $FoldersMap.Keys) {
-    $ExternalSubName = $FoldersMap[$LocalSubPath]
-    $LocalFull  = "$UserProfile\$LocalSubPath"
-    $ExternalFull = "$ExternalStorePath\$ExternalSubName"
+foreach ($Item in $TransferQueue) {
+    # Calculate Destination Path based on Mode
+    if ($Mode -eq "BACKUP") { $DestPath = "$ExternalStorePath\$($Item.DestName)" }
+    else { 
+        # Robust lookup for Destination in RESTORE mode
+        # Finds the original Local Path key where the Value equals the current DestName
+        $LocalRelPath = $null
+        
+        $MatchKey = $FoldersMap.Keys | Where-Object { $FoldersMap[$_] -eq $Item.DestName } | Select-Object -First 1
+        if ($MatchKey) { $LocalRelPath = $MatchKey }
+        
+        if (-not $LocalRelPath) {
+             $MatchKey = $ExtendedPaths.Keys | Where-Object { $ExtendedPaths[$_] -eq $Item.DestName } | Select-Object -First 1
+             if ($MatchKey) { $LocalRelPath = $MatchKey }
+        }
 
-    if ($Mode -eq "BACKUP") {
-        $Result = Run-Robocopy -Source $LocalFull -Destination $ExternalFull -LogFile $MainLog
-        $ReportItems += [PSCustomObject]@{ Item = $LocalSubPath; Status = $Result }
-    }
-    elseif ($Mode -eq "RESTORE") {
-        if (Test-Path $ExternalFull) {
-            $Result = Run-Robocopy -Source $ExternalFull -Destination $LocalFull -LogFile $MainLog
-            $ReportItems += [PSCustomObject]@{ Item = $ExternalSubName; Status = $Result }
+        if ($LocalRelPath) {
+            $DestPath = "$UserProfile\$LocalRelPath"
+        } else {
+            # Fallback if mapping fails
+            $DestPath = "$UserProfile\$($Item.DestName)"
         }
     }
-}
+    
+    # Update Progress Bar
+    $CurrentItemGB = [math]::Round($Item.SizeBytes / 1GB, 2)
+    $PercentDone = 0
+    if ($TotalBytesToTransfer -gt 0) {
+        $PercentDone = [math]::Round(($ProcessedBytes / $TotalBytesToTransfer) * 100)
+    }
+    
+    Write-Progress -Activity "Data Migration ($Mode)" -Status "Processing: $($Item.DestName) ($CurrentItemGB GB)" -PercentComplete $PercentDone -CurrentOperation "$PercentDone% Global Completion"
 
-# --- 8. REPORT GENERATION ---
+    # Run Copy
+    $Result = Run-Robocopy -Source $Item.SourcePath -Destination $DestPath -LogFile $MainLog
+    $ReportItems += [PSCustomObject]@{ Item = $Item.DestName; Status = $Result }
+    
+    # Accumulate Progress
+    $ProcessedBytes += $Item.SizeBytes
+}
+Write-Progress -Activity "Data Migration ($Mode)" -Completed
+
+# --- 9. REPORT GENERATION ---
 Write-Host "`n[ REPORT GENERATION ]" -ForegroundColor Yellow
 $CurrentDate = Get-Date -Format "yyyy-MM-dd HH:mm"
 $ComputerInfo = Get-CimInstance Win32_ComputerSystem
@@ -406,7 +474,8 @@ $HtmlContent = @"
     <strong>Operation Mode:</strong> $Mode <br>
     <strong>Workstation:</strong> $($ComputerInfo.Name) <br>
     <strong>Engineer:</strong> $EngineerName <br>
-    <strong>Storage Path:</strong> $ExternalStorePath
+    <strong>Storage Path:</strong> $ExternalStorePath <br>
+    <strong>Total Data Transferred:</strong> $TotalGB GB
 </div>
 <h2>Transfer Details</h2>
 <div class="section">
@@ -447,21 +516,22 @@ if ($EdgeExe) {
     Start-Process $HtmlFile
 }
 
-# --- 9. EMAIL REPORT ---
+# --- 10. EMAIL REPORT ---
 if ($EmailEnabled -and $PdfFile -and (Test-Path $PdfFile)) {
     Write-Host "`n[ EMAIL REPORT ]" -ForegroundColor Yellow
     Write-Host "   Sending Email to $ToAddress..." -ForegroundColor Cyan
     try {
-        Send-MailMessage -From $FromAddress -To $ToAddress -Subject "Backup & Recovery Report: $env:COMPUTERNAME ($Mode)" -Body "Attached is the $Mode report for Ticket $TicketNumber ($CustomerName)." -SmtpServer $SmtpServer -Port $SmtpPort -UseSsl $UseSSL -Credential $EmailCreds -Attachments $PdfFile -ErrorAction Stop
+        Send-MailMessage -From $FromAddress -To $ToAddress -Subject "Backup & Recovery Report: $env:COMPUTERNAME ($Mode)" -Body "Attached is the $Mode report for Ticket $TicketNumber ($CustomerName). Total Data: $TotalGB GB." -SmtpServer $SmtpServer -Port $SmtpPort -UseSsl $UseSSL -Credential $EmailCreds -Attachments $PdfFile -ErrorAction Stop
         Write-Host "   > Email Sent Successfully!" -ForegroundColor Green
     } catch {
         Write-Error "   > Failed to send email. Error: $_"
     }
 }
 
-# --- ALLOW SLEEP AGAIN ---
+# --- ALLOW SLEEP AGAIN & EXIT ---
 try { [SleepUtils]::SetThreadExecutionState(0x80000000) | Out-Null } catch { }
 
 Write-Host "`n[ COMPLETE ]" -ForegroundColor Green
-Write-Host "Operation finished."
-Pause
+Write-Host "Operation finished. Closing..."
+Start-Sleep -Seconds 2
+Exit
