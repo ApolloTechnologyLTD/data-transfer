@@ -1,8 +1,9 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.3
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.4
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
+    - EMAIL REPORTING ADDED (Same system as Health Check).
     - SILENT DETECTION: Extended paths (Edge, AppData) are restored without console clutter.
     - AUTO-INSTALLS Google Chrome if missing during Restore.
     - BACKUPS Edge, Chrome, Firefox, Opera, Brave, and full AppData.
@@ -13,6 +14,14 @@
 # CHANGE THIS TO $FALSE WHEN READY FOR REAL USE
 $DemoMode = $false
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
+
+# --- EMAIL SETTINGS ---
+$EmailEnabled = $false       # Set to $true to enable email
+$SmtpServer   = "smtp.office365.com"
+$SmtpPort     = 587
+$FromAddress  = "reports@yourdomain.com"
+$ToAddress    = "support@yourdomain.com"
+$UseSSL       = $true
 
 # --- 1. AUTO-ELEVATE TO ADMINISTRATOR ---
 $CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -192,6 +201,16 @@ if ($Mode -eq "BACKUP") {
 }
 
 Write-Host "---------------------------------------------------------------------------------"
+
+# Get Email Creds Early if Enabled
+$EmailCreds = $null
+if ($EmailEnabled) {
+    Write-Host "   [ EMAIL ENABLED ]" -ForegroundColor Cyan
+    $EmailPass = Read-Host "   > Please enter the Password for $FromAddress" -AsSecureString
+    $EmailCreds = New-Object System.Management.Automation.PSCredential ($FromAddress, $EmailPass)
+    Write-Host ""
+}
+
 $Confirm = Read-Host "Type 'Y' to proceed"
 if ($Confirm -ne 'Y') { Exit }
 
@@ -225,7 +244,7 @@ $FoldersMap = [ordered]@{
     "Documents\Outlook Files"               = "Outlook_Documents"
 }
 
-# Define Extended Paths (Edge, Full AppData Local/Roaming)
+# Define Extended Paths
 $ExtendedPaths = @{
     "AppData\Local\Microsoft\Edge\User Data"      = "Edge_UserData"
     "AppData\Roaming\Mozilla\Firefox"             = "Firefox_Data"
@@ -240,21 +259,16 @@ foreach ($RelPath in $ExtendedPaths.Keys) {
     $ExternalName = $ExtendedPaths[$RelPath]
     
     if ($Mode -eq "BACKUP") {
-        # Check if exists on THIS computer
         if (Test-Path "$UserProfile\$RelPath") {
             if (-not $FoldersMap.Contains($RelPath)) {
                 $FoldersMap[$RelPath] = $ExternalName
-                # Write-Host removed for silence
             }
         }
     }
     elseif ($Mode -eq "RESTORE") {
-        # Check if exists on EXTERNAL DRIVE
         if (Test-Path "$ExternalStorePath\$ExternalName") {
-            # Special check to prevent duplicates if already mapped
             if (-not $FoldersMap.Contains($RelPath)) {
                 $FoldersMap[$RelPath] = $ExternalName
-                # Write-Host removed for silence
             }
         }
     }
@@ -274,7 +288,6 @@ foreach ($LocalSubPath in $FoldersMap.Keys) {
         $ReportItems += [PSCustomObject]@{ Item = $LocalSubPath; Status = $Result }
     }
     elseif ($Mode -eq "RESTORE") {
-        # Only attempt restore if the folder exists on the backup drive
         if (Test-Path $ExternalFull) {
             $Result = Run-Robocopy -Source $ExternalFull -Destination $LocalFull -LogFile $MainLog
             $ReportItems += [PSCustomObject]@{ Item = $ExternalSubName; Status = $Result }
@@ -369,10 +382,25 @@ if ($EdgeExe) {
         }
     } catch {
         Write-Warning "PDF Conversion failed. Report saved as HTML."
+        $PdfFile = $HtmlFile # Fallback to HTML for attachment
         Start-Process $HtmlFile
     }
 } else {
+    Write-Warning "Edge not found. Report saved as HTML."
+    $PdfFile = $HtmlFile # Fallback to HTML for attachment
     Start-Process $HtmlFile
+}
+
+# --- 9. EMAIL REPORT ---
+if ($EmailEnabled -and $PdfFile -and (Test-Path $PdfFile)) {
+    Write-Host "`n[ EMAIL REPORT ]" -ForegroundColor Yellow
+    Write-Host "   Sending Email to $ToAddress..." -ForegroundColor Cyan
+    try {
+        Send-MailMessage -From $FromAddress -To $ToAddress -Subject "Backup & Recovery Report: $env:COMPUTERNAME ($Mode)" -Body "Attached is the $Mode report for Ticket $TicketNumber ($CustomerName)." -SmtpServer $SmtpServer -Port $SmtpPort -UseSsl $UseSSL -Credential $EmailCreds -Attachments $PdfFile -ErrorAction Stop
+        Write-Host "   > Email Sent Successfully!" -ForegroundColor Green
+    } catch {
+        Write-Error "   > Failed to send email. Error: $_"
+    }
 }
 
 Write-Host "`n[ COMPLETE ]" -ForegroundColor Green
