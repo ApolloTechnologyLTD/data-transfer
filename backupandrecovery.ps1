@@ -1,18 +1,17 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.8
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.9
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
-    - UPDATED: Added Data Progress Bar (Calculates total size before copying).
-    - INCLUDES: Admin Notice, Version Info, Anti-Sleep, Anti-Freeze, Email Reports.
-    - SILENT DETECTION for Edge/AppData.
-    - AUTO-EXIT: Closes PowerShell after report generation.
+    - FIXED: Robocopy now handles paths with spaces correctly (Quotes added).
+    - FIXED: Restore destination mapping logic.
+    - INCLUDES: Progress Bar, Admin Notice, Anti-Sleep, Email Reports.
 #>
 
 # --- 0. CONFIGURATION ---
 $DemoMode = $false
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
-$Version = "2.8"
+$Version = "2.9"
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -93,7 +92,6 @@ function Show-Header {
     Write-Host "`n   DATA MIGRATION & BACKUP TOOL" -ForegroundColor White
     Write-Host "=================================================================================" -ForegroundColor DarkGray
 
-    # Check admin status again for the header display
     $Current = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     $IsAdminHeader = $Current.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
@@ -152,10 +150,13 @@ function Run-Robocopy {
         return "Success (Demo)"
     }
     else {
+        # Create Destination if missing (Robocopy does this, but being safe)
+        if (!(Test-Path $Destination)) { New-Item -ItemType Directory -Path $Destination -Force | Out-Null }
+
         if (Test-Path $Source) {
             Write-Host "   Copying: $Source" -ForegroundColor Green
-            # Note: Removed /NP to allow robocopy file % to show in console as heartbeat
-            robocopy $Source $Destination /E /XO /R:1 /W:1 /LOG+:"$LogFile" /TEE /XD $Excludes | Out-Null
+            # FIX: Added QUOTES around Source and Dest to handle spaces
+            robocopy "$Source" "$Destination" /E /XO /R:1 /W:1 /LOG+:"$LogFile" /TEE /XD $Excludes | Out-Null
             return "Completed"
         } else {
             Write-Host "   Skipping: Source not found ($Source)" -ForegroundColor DarkGray
@@ -371,7 +372,6 @@ for ($i = 0; $i -lt $TransferQueue.Count; $i++) {
         $Item.SizeBytes = 1073741824 # 1GB Dummy
     } else {
         try {
-            # Fast measure using Get-ChildItem. ErrorAction SilentlyContinue ignores access denied on system files.
             $Measure = Get-ChildItem -Path $Item.SourcePath -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
             if ($Measure.Sum) { $Item.SizeBytes = $Measure.Sum }
         } catch { $Item.SizeBytes = 0 }
@@ -393,17 +393,24 @@ foreach ($Item in $TransferQueue) {
     # Calculate Destination Path based on Mode
     if ($Mode -eq "BACKUP") { $DestPath = "$ExternalStorePath\$($Item.DestName)" }
     else { 
-        # Reverse lookup is tricky, simplify by reconstructing local path mapping? 
-        # Actually we can just find the matching key in our Maps or construct based on DestName?
-        # Simpler: We know the Source is External, so Dest is Local.
-        # We need to find the local path that corresponds to this DestName.
+        # Robust lookup for Destination in RESTORE mode
+        # Finds the original Local Path key where the Value equals the current DestName
+        $LocalRelPath = $null
         
-        # Quick lookup logic for Destination in RESTORE mode
-        $LocalRelPath = ($FoldersMap.Keys | Where-Object { $FoldersMap[$_] -eq $Item.DestName })
-        if (-not $LocalRelPath) { 
-            $LocalRelPath = ($ExtendedPaths.Keys | Where-Object { $ExtendedPaths[$_] -eq $Item.DestName }) 
+        $MatchKey = $FoldersMap.Keys | Where-Object { $FoldersMap[$_] -eq $Item.DestName } | Select-Object -First 1
+        if ($MatchKey) { $LocalRelPath = $MatchKey }
+        
+        if (-not $LocalRelPath) {
+             $MatchKey = $ExtendedPaths.Keys | Where-Object { $ExtendedPaths[$_] -eq $Item.DestName } | Select-Object -First 1
+             if ($MatchKey) { $LocalRelPath = $MatchKey }
         }
-        $DestPath = "$UserProfile\$LocalRelPath"
+
+        if ($LocalRelPath) {
+            $DestPath = "$UserProfile\$LocalRelPath"
+        } else {
+            # Fallback if mapping fails
+            $DestPath = "$UserProfile\$($Item.DestName)"
+        }
     }
     
     # Update Progress Bar
