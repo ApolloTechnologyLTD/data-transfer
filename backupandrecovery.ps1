@@ -1,17 +1,16 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.4
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.5
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
-    - EMAIL REPORTING ADDED (Same system as Health Check).
-    - SILENT DETECTION: Extended paths (Edge, AppData) are restored without console clutter.
-    - AUTO-INSTALLS Google Chrome if missing during Restore.
-    - BACKUPS Edge, Chrome, Firefox, Opera, Brave, and full AppData.
-    - GENERATES HTML/PDF Reports.
+    - UPDATED: Added Disable Quick-Edit (Anti-Freeze) and Anti-Sleep mode.
+    - UPDATED: Added Input Verification Loop (Enter = Yes, N = Restart Input).
+    - EMAIL REPORTING ENABLED.
+    - SILENT DETECTION for Edge/AppData.
+    - AUTO-INSTALLS Google Chrome if missing.
 #>
 
 # --- 0. CONFIGURATION ---
-# CHANGE THIS TO $FALSE WHEN READY FOR REAL USE
 $DemoMode = $false
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
 
@@ -38,7 +37,47 @@ if (!($CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Admini
     }
 }
 
-# --- 2. HELPER FUNCTIONS ---
+# --- 2. PREVENT FREEZING & SLEEPING (FROM HEALTH CHECK) ---
+# Disable Quick-Edit (Prevents freezing on click)
+$consoleFuncs = @"
+using System;
+using System.Runtime.InteropServices;
+public class ConsoleUtils {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GetStdHandle(int nStdHandle);
+    [DllImport("kernel32.dll")]
+    public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+    [DllImport("kernel32.dll")]
+    public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+    public static void DisableQuickEdit() {
+        IntPtr hConsole = GetStdHandle(-10); // STD_INPUT_HANDLE
+        uint mode;
+        GetConsoleMode(hConsole, out mode);
+        mode &= ~0x0040u; // ENABLE_QUICK_EDIT_MODE = 0x0040
+        SetConsoleMode(hConsole, mode);
+    }
+}
+"@
+try {
+    Add-Type -TypeDefinition $consoleFuncs -Language CSharp
+    [ConsoleUtils]::DisableQuickEdit()
+} catch { }
+
+# Prevent Sleep
+$sleepBlocker = @"
+using System;
+using System.Runtime.InteropServices;
+public class SleepUtils {
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    public static extern uint SetThreadExecutionState(uint esFlags);
+}
+"@
+try {
+    Add-Type -TypeDefinition $sleepBlocker -Language CSharp
+    $null = [SleepUtils]::SetThreadExecutionState(0x80000003) # ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+} catch { }
+
+# --- 3. HELPER FUNCTIONS ---
 function Show-Header {
     Clear-Host
     $Banner = @'
@@ -87,7 +126,6 @@ function Run-Robocopy {
         [string]$LogFile
     )
 
-    # Standard Exclusions for AppData to avoid loops/bloat
     $Excludes = @("Temp", "Temporary Internet Files", "Application Data", "History", "Cookies")
 
     if ($DemoMode) {
@@ -100,7 +138,6 @@ function Run-Robocopy {
     else {
         if (Test-Path $Source) {
             Write-Host "   Copying: $Source" -ForegroundColor Green
-            # Robocopy Args: /E (Recursive) /XO (Exclude Older) /R:1 /W:1 /NP /XD (Exclude Dirs)
             robocopy $Source $Destination /E /XO /R:1 /W:1 /NP /LOG+:"$LogFile" /TEE /XD $Excludes | Out-Null
             return "Completed"
         } else {
@@ -111,7 +148,7 @@ function Run-Robocopy {
     }
 }
 
-# --- 3. MAIN MENU ---
+# --- 4. MAIN MENU ---
 Show-Header
 Write-Host "`n[ SELECT OPERATION MODE ]" -ForegroundColor Yellow
 Write-Host "   1. BACKUP  (Computer -> External Drive)"
@@ -128,55 +165,103 @@ switch ($MenuSelection) {
     Default { Write-Host "Invalid selection."; Pause; Exit }
 }
 
-# --- 4. INPUT COLLECTION ---
-Show-Header
-Write-Host "`n[ $Mode CONFIGURATION ]" -ForegroundColor Yellow
+# --- 5. INPUT COLLECTION LOOP ---
+# This loop allows the user to restart if they make a mistake
+do {
+    Show-Header
+    Write-Host "`n[ $Mode CONFIGURATION ]" -ForegroundColor Yellow
 
-$EngineerName = Read-Host "   > Enter Engineer Name"
-$TicketNumber = Read-Host "   > Enter Ticket Number"
+    $EngineerName = Read-Host "   > Enter Engineer Name"
+    $TicketNumber = Read-Host "   > Enter Ticket Number"
 
-# Drive Selection
-Write-Host "`n[ DRIVE SELECTION ]" -ForegroundColor Yellow
-Write-Host "Detecting drives..." -ForegroundColor DarkGray
-Get-PSDrive -PSProvider FileSystem | Select-Object Name, Used, Free, Root | Format-Table -AutoSize
+    # Drive Selection
+    Write-Host "`n[ DRIVE SELECTION ]" -ForegroundColor Yellow
+    Write-Host "Detecting drives..." -ForegroundColor DarkGray
+    Get-PSDrive -PSProvider FileSystem | Select-Object Name, Used, Free, Root | Format-Table -AutoSize
 
-$DriveLetterInput = Read-Host "   > Enter External Drive Letter (e.g. D or E)"
-$DriveLetter = $DriveLetterInput -replace ":", ""
+    $DriveLetterInput = Read-Host "   > Enter External Drive Letter (e.g. D or E)"
+    $DriveLetter = $DriveLetterInput -replace ":", ""
 
-if (!(Test-Path "$($DriveLetter):")) {
-    Write-Error "Drive $($DriveLetter): not found."
-    Pause
-    Exit
-}
-
-# --- 5. PATH LOGIC & SEARCH ---
-$UserProfile = $env:USERPROFILE
-
-if ($Mode -eq "BACKUP") {
-    $CustomerName = Read-Host "   > Enter Customer Full Name"
-    $ExternalStorePath = "$($DriveLetter):\${TicketNumber}-$($CustomerName)"
-    
-} elseif ($Mode -eq "RESTORE") {
-    Write-Host "`n[ SEARCHING FOR BACKUP ]" -ForegroundColor Yellow
-    Write-Host "   Searching drive $DriveLetter for Ticket $TicketNumber..." -ForegroundColor DarkGray
-    
-    $SearchPath = "$($DriveLetter):\${TicketNumber}-*"
-    $FoundFolders = Get-ChildItem -Path $SearchPath -Directory -ErrorAction SilentlyContinue
-    
-    if ($null -eq $FoundFolders -or $FoundFolders.Count -eq 0) {
-        Write-Host "`n[ ERROR ] NO BACKUP FOUND" -ForegroundColor Red
-        Pause; Exit
-    } elseif ($FoundFolders.Count -gt 1) {
-        Write-Host "`n[ ERROR ] MULTIPLE BACKUPS FOUND" -ForegroundColor Red
-        $FoundFolders | ForEach-Object { Write-Host "   - $($_.Name)" }
-        Pause; Exit
+    if (!(Test-Path "$($DriveLetter):")) {
+        Write-Error "Drive $($DriveLetter): not found."
+        Write-Host "Restarting input..." -ForegroundColor Red
+        Start-Sleep -Seconds 2
+        Continue # Restarts the loop
     }
 
-    $ExternalStorePath = $FoundFolders.FullName
-    $CustomerName = $FoundFolders.Name 
-    Write-Host "   FOUND: $CustomerName" -ForegroundColor Green
+    # PATH LOGIC & SEARCH
+    $UserProfile = $env:USERPROFILE
+    $ExternalStorePath = $null
+    $CustomerName = $null
 
-    # Check Chrome
+    if ($Mode -eq "BACKUP") {
+        $CustomerName = Read-Host "   > Enter Customer Full Name"
+        $ExternalStorePath = "$($DriveLetter):\${TicketNumber}-$($CustomerName)"
+        
+    } elseif ($Mode -eq "RESTORE") {
+        Write-Host "`n[ SEARCHING FOR BACKUP ]" -ForegroundColor Yellow
+        Write-Host "   Searching drive $DriveLetter for Ticket $TicketNumber..." -ForegroundColor DarkGray
+        
+        $SearchPath = "$($DriveLetter):\${TicketNumber}-*"
+        $FoundFolders = Get-ChildItem -Path $SearchPath -Directory -ErrorAction SilentlyContinue
+        
+        if ($null -eq $FoundFolders -or $FoundFolders.Count -eq 0) {
+            Write-Host "`n[ ERROR ] NO BACKUP FOUND" -ForegroundColor Red
+            Write-Host "Press any key to restart inputs..."
+            Pause
+            Continue
+        } elseif ($FoundFolders.Count -gt 1) {
+            Write-Host "`n[ ERROR ] MULTIPLE BACKUPS FOUND" -ForegroundColor Red
+            $FoundFolders | ForEach-Object { Write-Host "   - $($_.Name)" }
+            Write-Host "Press any key to restart inputs..."
+            Pause
+            Continue
+        }
+
+        $ExternalStorePath = $FoundFolders.FullName
+        $CustomerName = $FoundFolders.Name 
+        Write-Host "   FOUND: $CustomerName" -ForegroundColor Green
+    }
+
+    # Get Email Creds Early if Enabled
+    $EmailCreds = $null
+    if ($EmailEnabled) {
+        Write-Host "`n[ EMAIL CONFIGURATION ]" -ForegroundColor Cyan
+        $EmailPass = Read-Host "   > Please enter the Password for $FromAddress" -AsSecureString
+        $EmailCreds = New-Object System.Management.Automation.PSCredential ($FromAddress, $EmailPass)
+    }
+
+    # --- CONFIRMATION ---
+    Show-Header
+    Write-Host "`n[ CONFIRMATION ]" -ForegroundColor Yellow
+    Write-Host "   Operation:   $Mode" -ForegroundColor $(If ($Mode -eq 'BACKUP') {'Green'} Else {'Cyan'})
+    Write-Host "   Ticket:      $TicketNumber"
+    Write-Host "   Customer:    $CustomerName"
+    if ($Mode -eq "BACKUP") {
+        Write-Host "   Source:      THIS COMPUTER"
+        Write-Host "   Destination: $ExternalStorePath"
+    } else {
+        Write-Host "   Source:      $ExternalStorePath"
+        Write-Host "   Destination: THIS COMPUTER"
+    }
+    if ($EmailEnabled) { Write-Host "   Email:       Enabled ($ToAddress)" }
+
+    Write-Host "---------------------------------------------------------------------------------"
+    
+    $Confirm = Read-Host "Are these details correct? (Press [Enter] or [Y] for Yes, [N] for No)"
+    if ($Confirm -eq "") { $Confirm = "Y" }
+
+    if ($Confirm -match "N") {
+        Clear-Host
+        Write-Host "Restarting input..." -ForegroundColor Red
+        Start-Sleep -Seconds 1
+    }
+
+} while ($Confirm -match "N")
+
+# --- 6. EXECUTION PREP ---
+# Check Chrome (RESTORE ONLY) - moved after confirmation to avoid loop repetition
+if ($Mode -eq "RESTORE") {
     $ChromePath64 = "C:\Program Files\Google\Chrome\Application\chrome.exe"
     $ChromePath32 = "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
     if ((-not (Test-Path $ChromePath64)) -and (-not (Test-Path $ChromePath32))) {
@@ -185,34 +270,6 @@ if ($Mode -eq "BACKUP") {
 }
 
 $LogPath = "$ExternalStorePath\_Logs"
-
-# --- 6. CONFIRMATION ---
-Show-Header
-Write-Host "`n[ CONFIRMATION ]" -ForegroundColor Yellow
-Write-Host "   Operation:   $Mode" -ForegroundColor $(If ($Mode -eq 'BACKUP') {'Green'} Else {'Cyan'})
-Write-Host "   Ticket:      $TicketNumber"
-Write-Host "   Customer:    $CustomerName"
-if ($Mode -eq "BACKUP") {
-    Write-Host "   Source:      THIS COMPUTER"
-    Write-Host "   Destination: $ExternalStorePath"
-} else {
-    Write-Host "   Source:      $ExternalStorePath"
-    Write-Host "   Destination: THIS COMPUTER"
-}
-
-Write-Host "---------------------------------------------------------------------------------"
-
-# Get Email Creds Early if Enabled
-$EmailCreds = $null
-if ($EmailEnabled) {
-    Write-Host "   [ EMAIL ENABLED ]" -ForegroundColor Cyan
-    $EmailPass = Read-Host "   > Please enter the Password for $FromAddress" -AsSecureString
-    $EmailCreds = New-Object System.Management.Automation.PSCredential ($FromAddress, $EmailPass)
-    Write-Host ""
-}
-
-$Confirm = Read-Host "Type 'Y' to proceed"
-if ($Confirm -ne 'Y') { Exit }
 
 # Setup Logs
 if (!(Test-Path $ExternalStorePath)) { New-Item -ItemType Directory -Path $ExternalStorePath -Force | Out-Null }
@@ -231,7 +288,7 @@ if (-not $DemoMode) {
 # --- 7. MAPPING & EXECUTION ---
 Write-Host "`n[ STARTING TRANSFER ]" -ForegroundColor Yellow
 
-# Initialize Map (Standard Folders)
+# Initialize Map
 $FoldersMap = [ordered]@{
     "Desktop"   = "Desktop"
     "Documents" = "Documents"
@@ -244,7 +301,7 @@ $FoldersMap = [ordered]@{
     "Documents\Outlook Files"               = "Outlook_Documents"
 }
 
-# Define Extended Paths
+# Extended Paths
 $ExtendedPaths = @{
     "AppData\Local\Microsoft\Edge\User Data"      = "Edge_UserData"
     "AppData\Roaming\Mozilla\Firefox"             = "Firefox_Data"
@@ -254,22 +311,18 @@ $ExtendedPaths = @{
     "AppData\Local"                               = "AppData_Local"
 }
 
-# Process Extended Paths (Silent Detection)
+# Silent Detection
 foreach ($RelPath in $ExtendedPaths.Keys) {
     $ExternalName = $ExtendedPaths[$RelPath]
     
     if ($Mode -eq "BACKUP") {
         if (Test-Path "$UserProfile\$RelPath") {
-            if (-not $FoldersMap.Contains($RelPath)) {
-                $FoldersMap[$RelPath] = $ExternalName
-            }
+            if (-not $FoldersMap.Contains($RelPath)) { $FoldersMap[$RelPath] = $ExternalName }
         }
     }
     elseif ($Mode -eq "RESTORE") {
         if (Test-Path "$ExternalStorePath\$ExternalName") {
-            if (-not $FoldersMap.Contains($RelPath)) {
-                $FoldersMap[$RelPath] = $ExternalName
-            }
+            if (-not $FoldersMap.Contains($RelPath)) { $FoldersMap[$RelPath] = $ExternalName }
         }
     }
 }
@@ -279,7 +332,6 @@ $ReportItems = @()
 
 foreach ($LocalSubPath in $FoldersMap.Keys) {
     $ExternalSubName = $FoldersMap[$LocalSubPath]
-    
     $LocalFull  = "$UserProfile\$LocalSubPath"
     $ExternalFull = "$ExternalStorePath\$ExternalSubName"
 
@@ -295,9 +347,8 @@ foreach ($LocalSubPath in $FoldersMap.Keys) {
     }
 }
 
-# --- 8. ADVANCED REPORT GENERATION ---
+# --- 8. REPORT GENERATION ---
 Write-Host "`n[ REPORT GENERATION ]" -ForegroundColor Yellow
-
 $CurrentDate = Get-Date -Format "yyyy-MM-dd HH:mm"
 $ComputerInfo = Get-CimInstance Win32_ComputerSystem
 $TransferTableRows = ""
@@ -307,7 +358,6 @@ foreach ($Row in $ReportItems) {
     $TransferTableRows += "<tr><td>$($Row.Item)</td><td><span style='color:$StatusColor'>$($Row.Status)</span></td></tr>"
 }
 
-# Build HTML
 $HtmlFile = "$ExternalStorePath\${Mode}_Report.html"
 $PdfFile  = "$ExternalStorePath\${Mode}_Report.pdf"
 
@@ -335,7 +385,6 @@ $HtmlContent = @"
         <strong>Date:</strong> $CurrentDate | <strong>Customer:</strong> $CustomerName
     </div>
 </div>
-
 <h2>Job Information</h2>
 <div class="section">
     <strong>Operation Mode:</strong> $Mode <br>
@@ -343,19 +392,10 @@ $HtmlContent = @"
     <strong>Engineer:</strong> $EngineerName <br>
     <strong>Storage Path:</strong> $ExternalStorePath
 </div>
-
 <h2>Transfer Details</h2>
 <div class="section">
-    <table>
-        <thead>
-            <tr><th>Data Folder</th><th>Status</th></tr>
-        </thead>
-        <tbody>
-            $TransferTableRows
-        </tbody>
-    </table>
+    <table><thead><tr><th>Data Folder</th><th>Status</th></tr></thead><tbody>$TransferTableRows</tbody></table>
 </div>
-
 <p style="text-align:center; font-size:0.8em; color:#888; margin-top:50px;">&copy; $(Get-Date -Format yyyy) by Apollo Technology.</p>
 </body>
 </html>
@@ -382,12 +422,12 @@ if ($EdgeExe) {
         }
     } catch {
         Write-Warning "PDF Conversion failed. Report saved as HTML."
-        $PdfFile = $HtmlFile # Fallback to HTML for attachment
+        $PdfFile = $HtmlFile
         Start-Process $HtmlFile
     }
 } else {
     Write-Warning "Edge not found. Report saved as HTML."
-    $PdfFile = $HtmlFile # Fallback to HTML for attachment
+    $PdfFile = $HtmlFile
     Start-Process $HtmlFile
 }
 
@@ -402,6 +442,9 @@ if ($EmailEnabled -and $PdfFile -and (Test-Path $PdfFile)) {
         Write-Error "   > Failed to send email. Error: $_"
     }
 }
+
+# --- ALLOW SLEEP AGAIN ---
+try { [SleepUtils]::SetThreadExecutionState(0x80000000) | Out-Null } catch { }
 
 Write-Host "`n[ COMPLETE ]" -ForegroundColor Green
 Write-Host "Operation finished."
