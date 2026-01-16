@@ -1,11 +1,12 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.0
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.2
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
+    - FIXED: AppData\Local, Roaming, and Edge now restore correctly.
     - AUTO-INSTALLS Google Chrome if missing during Restore.
     - BACKUPS Edge, Chrome, Firefox, Opera, Brave, and full AppData.
-    - GENERATES HTML/PDF Reports (Same style as Health Check).
+    - GENERATES HTML/PDF Reports.
 #>
 
 # --- 0. CONFIGURATION ---
@@ -78,12 +79,11 @@ function Run-Robocopy {
     )
 
     # Standard Exclusions for AppData to avoid loops/bloat
+    # Note: This prevents the huge "Temp" folder inside AppData\Local from being copied
     $Excludes = @("Temp", "Temporary Internet Files", "Application Data", "History", "Cookies")
 
     if ($DemoMode) {
-        # Create Dummy Dest for visualization
         if (!(Test-Path $Destination)) { New-Item -ItemType Directory -Path $Destination -Force | Out-Null }
-        
         Write-Host "   [DEMO] Processing: $Source" -ForegroundColor Magenta
         Add-Content -Path $LogFile -Value "DEMO COPY: $Source -> $Destination"
         Start-Sleep -Milliseconds 100
@@ -92,7 +92,7 @@ function Run-Robocopy {
     else {
         if (Test-Path $Source) {
             Write-Host "   Copying: $Source" -ForegroundColor Green
-            # Robocopy Args: /E (Recursive) /XO (Exclude Older) /R:1 /W:1 /NP (No progress) /XD (Exclude Dirs)
+            # Robocopy Args: /E (Recursive) /XO (Exclude Older) /R:1 /W:1 /NP /XD (Exclude Dirs)
             robocopy $Source $Destination /E /XO /R:1 /W:1 /NP /LOG+:"$LogFile" /TEE /XD $Excludes | Out-Null
             return "Completed"
         } else {
@@ -124,7 +124,6 @@ switch ($MenuSelection) {
 Show-Header
 Write-Host "`n[ $Mode CONFIGURATION ]" -ForegroundColor Yellow
 
-# Shared Inputs
 $EngineerName = Read-Host "   > Enter Engineer Name"
 $TicketNumber = Read-Host "   > Enter Ticket Number"
 
@@ -150,7 +149,6 @@ if ($Mode -eq "BACKUP") {
     $ExternalStorePath = "$($DriveLetter):\${TicketNumber}-$($CustomerName)"
     
 } elseif ($Mode -eq "RESTORE") {
-    # SEARCH for the ticket number
     Write-Host "`n[ SEARCHING FOR BACKUP ]" -ForegroundColor Yellow
     Write-Host "   Searching drive $DriveLetter for Ticket $TicketNumber..." -ForegroundColor DarkGray
     
@@ -170,14 +168,11 @@ if ($Mode -eq "BACKUP") {
     $CustomerName = $FoundFolders.Name 
     Write-Host "   FOUND: $CustomerName" -ForegroundColor Green
 
-    # --- CHROME CHECK (RESTORE ONLY) ---
+    # Check Chrome
     $ChromePath64 = "C:\Program Files\Google\Chrome\Application\chrome.exe"
     $ChromePath32 = "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
-    
     if ((-not (Test-Path $ChromePath64)) -and (-not (Test-Path $ChromePath32))) {
         Install-GoogleChrome
-    } else {
-        Write-Host "   Chrome is already installed." -ForegroundColor Gray
     }
 }
 
@@ -215,10 +210,10 @@ if (-not $DemoMode) {
     Start-Sleep -Seconds 2
 }
 
-# --- 7. MAPPING & EXECUTION ---
+# --- 7. MAPPING & EXECUTION (FIXED) ---
 Write-Host "`n[ STARTING TRANSFER ]" -ForegroundColor Yellow
 
-# Initialize Map
+# Initialize Map (Standard Folders)
 $FoldersMap = [ordered]@{
     "Desktop"   = "Desktop"
     "Documents" = "Documents"
@@ -231,36 +226,42 @@ $FoldersMap = [ordered]@{
     "Documents\Outlook Files"               = "Outlook_Documents"
 }
 
-# --- DYNAMIC BROWSER & APPDATA LOGIC ---
-if ($Mode -eq "BACKUP") {
-    # 1. Edge User Data (Requested)
-    if (Test-Path "$UserProfile\AppData\Local\Microsoft\Edge\User Data") {
-        $FoldersMap["AppData\Local\Microsoft\Edge\User Data"] = "Edge_UserData"
-    }
-
-    # 2. Check for Other Browsers (Requested: "All Browsers")
-    $BrowserChecks = @{
-        "Firefox" = "AppData\Roaming\Mozilla\Firefox"
-        "Opera"   = "AppData\Roaming\Opera Software\Opera Stable"
-        "Brave"   = "AppData\Local\BraveSoftware\Brave-Browser\User Data"
-        "Vivaldi" = "AppData\Local\Vivaldi\User Data"
-    }
-    
-    foreach ($Browser in $BrowserChecks.Keys) {
-        $Path = $BrowserChecks[$Browser]
-        if (Test-Path "$UserProfile\$Path") {
-            Write-Host "   Detected Browser: $Browser" -ForegroundColor Cyan
-            $FoldersMap[$Path] = "${Browser}_Data"
-        }
-    }
-
-    # 3. Full AppData (Requested: "copy app data directory")
-    # Note: Robocopy handles overlapping files fine, but we list these last.
-    $FoldersMap["AppData\Roaming"] = "AppData_Roaming"
-    $FoldersMap["AppData\Local"]   = "AppData_Local"
+# Define Extended Paths (Edge, Full AppData Local/Roaming)
+$ExtendedPaths = @{
+    "AppData\Local\Microsoft\Edge\User Data"      = "Edge_UserData"
+    "AppData\Roaming\Mozilla\Firefox"             = "Firefox_Data"
+    "AppData\Roaming\Opera Software\Opera Stable" = "Opera_Data"
+    "AppData\Local\BraveSoftware\Brave-Browser\User Data" = "Brave_Data"
+    "AppData\Roaming"                             = "AppData_Roaming"
+    "AppData\Local"                               = "AppData_Local"
 }
 
-# Store results for report
+# Process Extended Paths (Add to Map if they exist in Source)
+foreach ($RelPath in $ExtendedPaths.Keys) {
+    $ExternalName = $ExtendedPaths[$RelPath]
+    
+    if ($Mode -eq "BACKUP") {
+        # Check if exists on THIS computer
+        if (Test-Path "$UserProfile\$RelPath") {
+            if (-not $FoldersMap.Contains($RelPath)) {
+                $FoldersMap[$RelPath] = $ExternalName
+                Write-Host "   + Detected for Backup: $RelPath" -ForegroundColor DarkGray
+            }
+        }
+    }
+    elseif ($Mode -eq "RESTORE") {
+        # Check if exists on EXTERNAL DRIVE
+        if (Test-Path "$ExternalStorePath\$ExternalName") {
+            # Special check to prevent duplicates if already mapped
+            if (-not $FoldersMap.Contains($RelPath)) {
+                $FoldersMap[$RelPath] = $ExternalName
+                Write-Host "   + Detected for Restore: $ExternalName" -ForegroundColor DarkGray
+            }
+        }
+    }
+}
+
+# Execution Loop
 $ReportItems = @()
 
 foreach ($LocalSubPath in $FoldersMap.Keys) {
@@ -274,7 +275,7 @@ foreach ($LocalSubPath in $FoldersMap.Keys) {
         $ReportItems += [PSCustomObject]@{ Item = $LocalSubPath; Status = $Result }
     }
     elseif ($Mode -eq "RESTORE") {
-        # For restore, we check if the external folder exists before trying to copy back
+        # Only attempt restore if the folder exists on the backup drive
         if (Test-Path $ExternalFull) {
             $Result = Run-Robocopy -Source $ExternalFull -Destination $LocalFull -LogFile $MainLog
             $ReportItems += [PSCustomObject]@{ Item = $ExternalSubName; Status = $Result }
@@ -282,7 +283,7 @@ foreach ($LocalSubPath in $FoldersMap.Keys) {
     }
 }
 
-# --- 8. ADVANCED REPORT GENERATION (Health Check Style) ---
+# --- 8. ADVANCED REPORT GENERATION ---
 Write-Host "`n[ REPORT GENERATION ]" -ForegroundColor Yellow
 
 $CurrentDate = Get-Date -Format "yyyy-MM-dd HH:mm"
@@ -305,12 +306,9 @@ $HtmlContent = @"
 <style>
     body { font-family: 'Segoe UI', sans-serif; color: #333; padding: 20px; }
     .header { text-align: center; margin-bottom: 20px; }
-    .header img { max-height: 100px; }
     h1 { color: #0056b3; margin-bottom: 5px; }
     .meta { font-size: 0.9em; color: #666; text-align: center; margin-bottom: 30px; }
     .section { background: #f9f9f9; padding: 15px; border-left: 6px solid #0056b3; margin-bottom: 20px; }
-    .item { margin-bottom: 12px; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px; }
-    .label { font-weight: bold; color: #444; display: block; margin-bottom: 2px; }
     table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
     th { text-align: left; background: #eee; padding: 8px; border-bottom: 1px solid #ddd; }
     td { padding: 8px; border-bottom: 1px solid #ddd; }
@@ -318,7 +316,7 @@ $HtmlContent = @"
 </head>
 <body>
 <div class="header">
-    <img src="$LogoUrl" alt="Apollo Technology" onerror="this.style.display='none'">
+    <img src="$LogoUrl" alt="Apollo Technology" style="max-height:100px;">
     <h1>Data $Mode Report</h1>
     <p>Report generated by <strong>$EngineerName</strong> for ticket (<strong>$TicketNumber</strong>)</p>
     <div class="meta">
@@ -328,10 +326,10 @@ $HtmlContent = @"
 
 <h2>Job Information</h2>
 <div class="section">
-    <div class="item"><span class="label">Operation Mode:</span> $Mode</div>
-    <div class="item"><span class="label">Workstation:</span> $($ComputerInfo.Name)</div>
-    <div class="item"><span class="label">Engineer:</span> $EngineerName</div>
-    <div class="item"><span class="label">Storage Path:</span> $ExternalStorePath</div>
+    <strong>Operation Mode:</strong> $Mode <br>
+    <strong>Workstation:</strong> $($ComputerInfo.Name) <br>
+    <strong>Engineer:</strong> $EngineerName <br>
+    <strong>Storage Path:</strong> $ExternalStorePath
 </div>
 
 <h2>Transfer Details</h2>
@@ -353,7 +351,7 @@ $HtmlContent = @"
 
 $HtmlContent | Out-File -FilePath $HtmlFile -Encoding UTF8
 
-# Convert to PDF using Edge (Headless)
+# Convert to PDF
 $EdgeLoc1 = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 $EdgeLoc2 = "C:\Program Files\Microsoft\Edge\Application\msedge.exe"
 $EdgeExe = if (Test-Path $EdgeLoc1) { $EdgeLoc1 } elseif (Test-Path $EdgeLoc2) { $EdgeLoc2 } else { $null }
@@ -363,23 +361,18 @@ if ($EdgeExe) {
     $EdgeUserData = "$ExternalStorePath\EdgeTemp"
     if (-not (Test-Path $EdgeUserData)) { New-Item -Path $EdgeUserData -ItemType Directory -Force | Out-Null }
     try {
-        $Process = Start-Process -FilePath $EdgeExe -ArgumentList "--headless", "--disable-gpu", "--print-to-pdf=`"$PdfFile`"", "--no-pdf-header-footer", "--user-data-dir=`"$EdgeUserData`"", "`"$HtmlFile`"" -PassThru -Wait
-        Start-Sleep -Seconds 2 
+        Start-Process -FilePath $EdgeExe -ArgumentList "--headless", "--print-to-pdf=`"$PdfFile`"", "--no-pdf-header-footer", "--user-data-dir=`"$EdgeUserData`"", "`"$HtmlFile`"" -Wait
         if (Test-Path $PdfFile) {
             Write-Host "   Report saved to: $PdfFile" -ForegroundColor Green
-            # Clean up HTML and Temp
             Remove-Item $HtmlFile -ErrorAction SilentlyContinue
             Remove-Item $EdgeUserData -Recurse -Force -ErrorAction SilentlyContinue
-            
-            # Open PDF
             Start-Process $PdfFile
-        } else { throw "PDF creation failed" }
+        }
     } catch {
         Write-Warning "PDF Conversion failed. Report saved as HTML."
         Start-Process $HtmlFile
     }
 } else {
-    Write-Warning "Edge not found. Report saved as HTML."
     Start-Process $HtmlFile
 }
 
