@@ -1,18 +1,17 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.6
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.7
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
-    - UPDATED: Header now includes Admin Notice, Credits, and Power Status.
-    - INCLUDES: Anti-Sleep, Anti-Freeze (QuickEdit), Email Reports, Input Validation.
+    - UPDATED: Script now exits and closes PowerShell automatically after opening the report.
+    - INCLUDES: Admin Notice, Version Info, Anti-Sleep, Anti-Freeze, Email Reports.
     - SILENT DETECTION for Edge/AppData.
-    - AUTO-INSTALLS Google Chrome if missing.
 #>
 
 # --- 0. CONFIGURATION ---
 $DemoMode = $false
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
-$Version = "2.6"
+$Version = "2.7"
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -40,7 +39,7 @@ if (!($isAdmin)) {
 }
 
 # --- 2. PREVENT FREEZING & SLEEPING ---
-# Disable Quick-Edit (Prevents freezing on click)
+# Disable Quick-Edit
 $consoleFuncs = @"
 using System;
 using System.Runtime.InteropServices;
@@ -93,8 +92,7 @@ function Show-Header {
     Write-Host "`n   DATA MIGRATION & BACKUP TOOL" -ForegroundColor White
     Write-Host "=================================================================================" -ForegroundColor DarkGray
 
-    # --- ADDED: NOTICE & DETAILS ---
-    # Re-check admin status for the header display
+    # Check admin status again for the header display
     $Current = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     $IsAdminHeader = $Current.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
@@ -106,7 +104,6 @@ function Show-Header {
 
     Write-Host "        Created by Lewis Wiltshire, Version $Version" -ForegroundColor Yellow
     Write-Host "      [POWER] Sleep Mode & Screen Timeout Blocked." -ForegroundColor DarkGray
-    # -------------------------------
 
     if ($DemoMode) {
         Write-Host "`n   *** DEMO MODE ACTIVE - NO REAL DATA WILL BE COPIED ***" -ForegroundColor Magenta
@@ -412,7 +409,7 @@ $HtmlContent = @"
 <div class="section">
     <table><thead><tr><th>Data Folder</th><th>Status</th></tr></thead><tbody>$TransferTableRows</tbody></table>
 </div>
-<p style="text-align:center; font-size:0.8em; color:#888; margin-top:50px;">&copy; $(Get-Date -Format yyyy) by Apollo Technology.</p>
+<p style="text-align:center; font-size:0.8em; color:#888; margin-top:50px;">&copy; $(Get-Date -Format yyyy) by Apollo Technology. All rights reserved | This tool has been created by Lewis Wiltshire (Apollo Technology)</p>
 </body>
 </html>
 "@
@@ -459,9 +456,10 @@ if ($EmailEnabled -and $PdfFile -and (Test-Path $PdfFile)) {
     }
 }
 
-# --- ALLOW SLEEP AGAIN ---
+# --- ALLOW SLEEP AGAIN & EXIT ---
 try { [SleepUtils]::SetThreadExecutionState(0x80000000) | Out-Null } catch { }
 
 Write-Host "`n[ COMPLETE ]" -ForegroundColor Green
-Write-Host "Operation finished."
-Pause
+Write-Host "Operation finished. Closing..."
+Start-Sleep -Seconds 2
+Exit
