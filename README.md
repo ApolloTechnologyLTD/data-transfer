@@ -62,10 +62,11 @@ Run the following command to download and execute the utility:
 iwr https://short.apollotechnology.co.uk/backup_and_recovery -OutFile backupandrecovery.ps1; powershell -ExecutionPolicy Bypass .\backupandrecovery.ps1
 ```
 
+> [!IMPORTANT]
 > **ADMINISTRATOR PRIVILEGES REQUIRED**
+>
 > This script modifies system files/registries. You must launch your PowerShell with **"Run as Administrator"** rights.
 > If you run this in a standard PowerShell, the script will fail or behave unexpectedly.
-{.is-info}
 
 
 ---
