@@ -1,18 +1,18 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v2.7
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v3.1 Beta
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
-    - UPDATED v2.7: Added Visual Progress Bar during transfer.
-    - INCLUDES: Anti-Sleep, Anti-Freeze (QuickEdit), Email Reports, Input Validation.
-    - SILENT DETECTION for Edge/AppData.
-    - AUTO-INSTALLS Google Chrome if missing.
+    - NEW v3.1: Added Mandatory Liability Disclaimer.
+    - NEW v3.0: "Offline Source" Mode (Backup from Slave Drives).
+    - NEW v3.0: Enhanced Browser Profile Copying (Chrome/Edge/Brave).
+    - INCLUDES: Anti-Sleep, Anti-Freeze, Email Reports, Visual Progress Bar.
 #>
 
 # --- 0. CONFIGURATION ---
 $DemoMode = $false
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
-$Version = "2.7"
+$Version = "3.1 Beta"
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -90,7 +90,7 @@ function Show-Header {
 /_/  |_/_/    \____/_____/_____/\____/    /_/ /_____/\____/_/ /_/_/ |_/\____/_____/\____/\____/   /_/   
 '@
     Write-Host $Banner -ForegroundColor Cyan
-    Write-Host "`n   DATA MIGRATION & BACKUP TOOL" -ForegroundColor White
+    Write-Host "`n   DATA MIGRATION & BACKUP TOOL v$Version" -ForegroundColor White
     Write-Host "=================================================================================" -ForegroundColor DarkGray
 
     # --- NOTICE & DETAILS ---
@@ -103,12 +103,49 @@ function Show-Header {
         Write-Host "      [NOTICE] Running as Standard User" -ForegroundColor Yellow 
     }
 
-    Write-Host "        Created by Lewis Wiltshire, Version $Version" -ForegroundColor Yellow
+    Write-Host "        Created by Lewis Wiltshire, Apollo Technology" -ForegroundColor Yellow
     Write-Host "      [POWER] Sleep Mode & Screen Timeout Blocked." -ForegroundColor DarkGray
     # -------------------------------
 
     if ($DemoMode) {
         Write-Host "`n   *** DEMO MODE ACTIVE - NO REAL DATA WILL BE COPIED ***" -ForegroundColor Magenta
+    }
+}
+
+function Show-Disclaimer {
+    Show-Header
+    Write-Host "`n[ IMPORTANT DISCLAIMER & LIABILITY WAIVER ]" -ForegroundColor Red
+    
+    $DisclaimerText = @"
+WARNING: You are about to use software currently in BETA (Version $Version).
+
+1. NO WARRANTY: This script is provided "as-is" without warranty of any kind, express or implied.
+2. DATA INTEGRITY: Do NOT rely on this tool completely. It is an automation utility designed to assist, 
+   not replace, professional verification.
+3. LIMITATION OF LIABILITY: Lewis Wiltshire and Apollo Technology accept NO LIABILITY and NO BLAME 
+   for any data loss, corruption, missing files, failed transfers, or damages resulting from the use 
+   of this script.
+4. RESPONSIBILITY: It is the sole responsibility of the Engineer using this tool to manually verify 
+   that all critical data has been successfully transferred before formatting or disposing of the 
+   source device.
+
+By proceeding, you acknowledge these risks and agree to hold the creator harmless.
+"@
+    Write-Host $DisclaimerText -ForegroundColor Yellow
+    Write-Host "`n---------------------------------------------------------------------------------" -ForegroundColor DarkGray
+    Write-Host "   PRESS [Y] or [ENTER] to Accept and Continue." -ForegroundColor Green
+    Write-Host "   PRESS [N] or [ESC]   to Decline and Exit." -ForegroundColor Red
+    
+    while ($true) {
+        $Key = [System.Console]::ReadKey($true)
+        if ($Key.Key -eq 'Y' -or $Key.Key -eq 'Enter') {
+            return # Continue script
+        }
+        elseif ($Key.Key -eq 'N' -or $Key.Key -eq 'Escape') {
+            Write-Host "`n   User declined disclaimer. Exiting..." -ForegroundColor Red
+            Start-Sleep -Seconds 1
+            Exit
+        }
     }
 }
 
@@ -136,6 +173,42 @@ function Install-GoogleChrome {
     }
 }
 
+function Get-SourceUserFromDrive {
+    # Helper to select a user profile from an external drive
+    Write-Host "`n[ SELECT SOURCE DRIVE (OFFLINE MODE) ]" -ForegroundColor Yellow
+    $drives = Get-PSDrive -PSProvider FileSystem
+    $drives | Select-Object Name, @{N='Size(GB)';E={"{0:N2}" -f ($_.Used/1GB + $_.Free/1GB)}}, @{N='Free(GB)';E={"{0:N2}" -f ($_.Free/1GB)}}, Root | Format-Table -AutoSize
+    
+    $SourceDriveLetter = Read-Host "   > Enter Drive Letter of the OLD computer (e.g. E)"
+    $SourceDriveLetter = $SourceDriveLetter -replace ":", ""
+    $UsersRoot = "$($SourceDriveLetter):\Users"
+
+    if (!(Test-Path $UsersRoot)) {
+        Write-Error "   Users folder not found at $UsersRoot. Please check the drive."
+        Start-Sleep -Seconds 2
+        return $null
+    }
+
+    Write-Host "`n[ DETECTED USER PROFILES ]" -ForegroundColor Yellow
+    $UserFolders = Get-ChildItem -Path $UsersRoot -Directory | Where-Object { $_.Name -notin "Public", "Default", "All Users", "Default User" }
+    
+    $i = 1
+    foreach ($u in $UserFolders) {
+        Write-Host "   $i. $($u.Name)"
+        $i++
+    }
+
+    $Selection = Read-Host "`n   > Select User Number to Backup"
+    if ($Selection -match "^\d+$" -and $Selection -le $UserFolders.Count) {
+        $SelectedUser = $UserFolders[$Selection - 1]
+        Write-Host "   Selected: $($SelectedUser.FullName)" -ForegroundColor Green
+        return $SelectedUser.FullName
+    } else {
+        Write-Host "   Invalid selection." -ForegroundColor Red
+        return $null
+    }
+}
+
 function Run-Robocopy {
     param (
         [string]$Source,
@@ -143,6 +216,7 @@ function Run-Robocopy {
         [string]$LogFile
     )
 
+    # Exclude junction points that cause loops or access denied
     $Excludes = @("Temp", "Temporary Internet Files", "Application Data", "History", "Cookies")
 
     if ($DemoMode) {
@@ -154,8 +228,9 @@ function Run-Robocopy {
     }
     else {
         if (Test-Path $Source) {
-            # Note: /NP is kept to keep logs clean, but we use the outer Progress Bar for visuals
-            robocopy $Source $Destination /E /XO /R:1 /W:1 /NP /LOG+:"$LogFile" /TEE /XD $Excludes | Out-Null
+            # /E = recursive, /XO = exclude older, /R:1 /W:1 = 1 retry, 1 sec wait
+            # /COPY:DAT = Copy Data, Attributes, Time stamps (Avoids Security/Owner issues on FAT32 drives)
+            robocopy $Source $Destination /E /XO /COPY:DAT /R:1 /W:1 /NP /LOG+:"$LogFile" /TEE /XD $Excludes | Out-Null
             return "Completed"
         } else {
             Write-Host "   Skipping: Source not found ($Source)" -ForegroundColor DarkGray
@@ -165,11 +240,14 @@ function Run-Robocopy {
     }
 }
 
-# --- 4. MAIN MENU ---
+# --- 4. DISCLAIMER CHECK ---
+Show-Disclaimer
+
+# --- 5. MAIN MENU ---
 Show-Header
 Write-Host "`n[ SELECT OPERATION MODE ]" -ForegroundColor Yellow
-Write-Host "   1. BACKUP  (Computer -> External Drive)"
-Write-Host "   2. RESTORE (External Drive -> New Computer)"
+Write-Host "   1. BACKUP  (Copy data FROM a source TO an external drive)"
+Write-Host "   2. RESTORE (Copy data FROM an external drive TO this computer)"
 Write-Host "   3. EXIT"
 Write-Host "---------------------------------------------------------------------------------"
 
@@ -182,7 +260,7 @@ switch ($MenuSelection) {
     Default { Write-Host "Invalid selection."; Pause; Exit }
 }
 
-# --- 5. INPUT COLLECTION LOOP ---
+# --- 6. INPUT COLLECTION LOOP ---
 do {
     Show-Header
     Write-Host "`n[ $Mode CONFIGURATION ]" -ForegroundColor Yellow
@@ -190,12 +268,34 @@ do {
     $EngineerName = Read-Host "   > Enter Engineer Name"
     $TicketNumber = Read-Host "   > Enter Ticket Number"
 
-    # Drive Selection
-    Write-Host "`n[ DRIVE SELECTION ]" -ForegroundColor Yellow
-    Write-Host "Detecting drives..." -ForegroundColor DarkGray
+    # --- NEW: SOURCE SELECTION FOR BACKUP ---
+    $SourceProfilePath = $env:USERPROFILE # Default to current user
+    
+    if ($Mode -eq "BACKUP") {
+        Write-Host "`n[ SOURCE LOCATION ]" -ForegroundColor Cyan
+        Write-Host "   1. This Computer (Current User: $env:USERNAME)"
+        Write-Host "   2. External/Slave Drive (Offline Windows)"
+        $SourceType = Read-Host "   > Select Source (1 or 2)"
+        
+        if ($SourceType -eq "2") {
+            $PickedPath = Get-SourceUserFromDrive
+            if ($PickedPath) {
+                $SourceProfilePath = $PickedPath
+            } else {
+                Write-Host "Selection failed. Restarting..."
+                Start-Sleep -Seconds 2
+                Continue
+            }
+        }
+    }
+    # ----------------------------------------
+
+    # Target Drive Selection
+    Write-Host "`n[ STORAGE DRIVE SELECTION ]" -ForegroundColor Yellow
+    Write-Host "Detecting storage drives..." -ForegroundColor DarkGray
     Get-PSDrive -PSProvider FileSystem | Select-Object Name, Used, Free, Root | Format-Table -AutoSize
 
-    $DriveLetterInput = Read-Host "   > Enter External Drive Letter (e.g. D or E)"
+    $DriveLetterInput = Read-Host "   > Enter Storage/Backup Drive Letter (e.g. D or E)"
     $DriveLetter = $DriveLetterInput -replace ":", ""
 
     if (!(Test-Path "$($DriveLetter):")) {
@@ -206,7 +306,6 @@ do {
     }
 
     # PATH LOGIC & SEARCH
-    $UserProfile = $env:USERPROFILE
     $ExternalStorePath = $null
     $CustomerName = $null
 
@@ -254,12 +353,13 @@ do {
     Write-Host "   Ticket:      $TicketNumber"
     Write-Host "   Customer:    $CustomerName"
     if ($Mode -eq "BACKUP") {
-        Write-Host "   Source:      THIS COMPUTER"
+        Write-Host "   Source:      $SourceProfilePath"
         Write-Host "   Destination: $ExternalStorePath"
     } else {
         Write-Host "   Source:      $ExternalStorePath"
-        Write-Host "   Destination: THIS COMPUTER"
+        Write-Host "   Destination: THIS COMPUTER ($env:USERPROFILE)"
     }
+    
     if ($EmailEnabled) { Write-Host "   Email:       Enabled ($ToAddress)" }
 
     Write-Host "---------------------------------------------------------------------------------"
@@ -275,7 +375,7 @@ do {
 
 } while ($Confirm -match "N")
 
-# --- 6. EXECUTION PREP ---
+# --- 7. EXECUTION PREP ---
 if ($Mode -eq "RESTORE") {
     $ChromePath64 = "C:\Program Files\Google\Chrome\Application\chrome.exe"
     $ChromePath32 = "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
@@ -292,18 +392,19 @@ if (!(Test-Path $LogPath)) { New-Item -ItemType Directory -Path $LogPath -Force 
 $MainLog = "$LogPath\${Mode}_Log.txt"
 Add-Content -Path $MainLog -Value "Operation: $Mode | Date: $(Get-Date)"
 
-# Stop Processes
+# Stop Processes - CRITICAL FOR BROWSER DATA
 Write-Host "`n[ SYSTEM PREP ]" -ForegroundColor Yellow
 if (-not $DemoMode) {
-    Write-Host "Stopping Browsers and Outlook..." -ForegroundColor Gray
-    Stop-Process -Name "chrome", "msedge", "outlook", "firefox" -Force -ErrorAction SilentlyContinue
+    Write-Host "   Force closing Browsers and Outlook to unlock database files..." -ForegroundColor Red
+    # Added braves, operas and generic names to ensure file release
+    Stop-Process -Name "chrome", "msedge", "outlook", "firefox", "brave", "opera", "iexplore" -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
 }
 
-# --- 7. MAPPING & EXECUTION ---
+# --- 8. MAPPING & EXECUTION ---
 Write-Host "`n[ STARTING TRANSFER ]" -ForegroundColor Yellow
 
-# Initialize Map
+# Initialize Map - UPDATED FOR BETTER BROWSER COVERAGE
 $FoldersMap = [ordered]@{
     "Desktop"   = "Desktop"
     "Documents" = "Documents"
@@ -311,19 +412,24 @@ $FoldersMap = [ordered]@{
     "Pictures"  = "Pictures"
     "Music"     = "Music"
     "Videos"    = "Videos"
+    
+    # BROWSER PROFILES (Main)
     "AppData\Local\Google\Chrome\User Data" = "Chrome_UserData"
+    "AppData\Local\Microsoft\Edge\User Data" = "Edge_UserData"
+    
+    # OUTLOOK
     "AppData\Local\Microsoft\Outlook"       = "Outlook_AppData"
     "Documents\Outlook Files"               = "Outlook_Documents"
 }
 
-# Extended Paths
+# Extended Paths (Silent Detection)
 $ExtendedPaths = @{
-    "AppData\Local\Microsoft\Edge\User Data"      = "Edge_UserData"
     "AppData\Roaming\Mozilla\Firefox"             = "Firefox_Data"
     "AppData\Roaming\Opera Software\Opera Stable" = "Opera_Data"
     "AppData\Local\BraveSoftware\Brave-Browser\User Data" = "Brave_Data"
     "AppData\Roaming"                             = "AppData_Roaming"
-    "AppData\Local"                               = "AppData_Local"
+    # Capture Local AppData Root (sometimes contains other app configs)
+    # "AppData\Local"                             = "AppData_Local" 
 }
 
 # Silent Detection (Populate Map with detected paths)
@@ -331,7 +437,7 @@ foreach ($RelPath in $ExtendedPaths.Keys) {
     $ExternalName = $ExtendedPaths[$RelPath]
     
     if ($Mode -eq "BACKUP") {
-        if (Test-Path "$UserProfile\$RelPath") {
+        if (Test-Path "$SourceProfilePath\$RelPath") {
             if (-not $FoldersMap.Contains($RelPath)) { $FoldersMap[$RelPath] = $ExternalName }
         }
     }
@@ -343,13 +449,20 @@ foreach ($RelPath in $ExtendedPaths.Keys) {
 }
 
 # --- VALIDATE LIST FOR PROGRESS BAR ---
-# We create a list of items that *actually exist* so the progress bar is accurate.
 $ValidTransferItems = @()
 Write-Host "   Verifying copy list..." -ForegroundColor DarkGray
 
 foreach ($LocalSubPath in $FoldersMap.Keys) {
     $ExternalSubName = $FoldersMap[$LocalSubPath]
-    $LocalFull  = "$UserProfile\$LocalSubPath"
+    
+    # Logic uses $SourceProfilePath instead of hardcoded env:USERPROFILE
+    $LocalFull  = "$SourceProfilePath\$LocalSubPath"
+    
+    # On RESTORE, we write to Current User
+    if ($Mode -eq "RESTORE") {
+        $LocalFull = "$env:USERPROFILE\$LocalSubPath"
+    }
+
     $ExternalFull = "$ExternalStorePath\$ExternalSubName"
 
     $ShouldAdd = $false
@@ -397,7 +510,7 @@ foreach ($Task in $ValidTransferItems) {
 # Close Progress Bar
 Write-Progress -Activity "Migrating Data ($Mode)" -Completed
 
-# --- 8. REPORT GENERATION ---
+# --- 9. REPORT GENERATION ---
 Write-Host "`n[ REPORT GENERATION ]" -ForegroundColor Yellow
 $CurrentDate = Get-Date -Format "yyyy-MM-dd HH:mm"
 $ComputerInfo = Get-CimInstance Win32_ComputerSystem
@@ -424,6 +537,7 @@ $HtmlContent = @"
     table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
     th { text-align: left; background: #eee; padding: 8px; border-bottom: 1px solid #ddd; }
     td { padding: 8px; border-bottom: 1px solid #ddd; }
+    .warning { color: #d9534f; font-size: 0.8em; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -439,12 +553,16 @@ $HtmlContent = @"
 <div class="section">
     <strong>Operation Mode:</strong> $Mode <br>
     <strong>Workstation:</strong> $($ComputerInfo.Name) <br>
-    <strong>Engineer:</strong> $EngineerName <br>
-    <strong>Storage Path:</strong> $ExternalStorePath
+    <strong>Source Path:</strong> $SourceProfilePath <br>
+    <strong>Engineer:</strong> $EngineerName
 </div>
 <h2>Transfer Details</h2>
 <div class="section">
     <table><thead><tr><th>Data Folder</th><th>Status</th></tr></thead><tbody>$TransferTableRows</tbody></table>
+    <p class="warning"><strong>Note on Browser Security:</strong> Browser profile files (Chrome/Edge) have been copied. However, due to Windows DPAPI encryption security, saved passwords are encrypted using the original user's specific account key. They may not auto-decrypt on a new computer unless a cloud sync account was active.</p>
+</div>
+<div class="section">
+    <strong>Disclaimer:</strong> This operation was performed using Beta software (v$Version). Lewis Wiltshire and Apollo Technology accept no liability for data integrity. Verification is the responsibility of the engineer.
 </div>
 <p style="text-align:center; font-size:0.8em; color:#888; margin-top:50px;">&copy; $(Get-Date -Format yyyy) by Apollo Technology. All rights reserved. Created by Apollo Technology (Lewis Wiltshire)</p>
 </body>
@@ -481,12 +599,12 @@ if ($EdgeExe) {
     Start-Process $HtmlFile
 }
 
-# --- 9. EMAIL REPORT ---
+# --- 10. EMAIL REPORT ---
 if ($EmailEnabled -and $PdfFile -and (Test-Path $PdfFile)) {
     Write-Host "`n[ EMAIL REPORT ]" -ForegroundColor Yellow
     Write-Host "   Sending Email to $ToAddress..." -ForegroundColor Cyan
     try {
-        Send-MailMessage -From $FromAddress -To $ToAddress -Subject "Backup & Recovery Report: $env:COMPUTERNAME ($Mode)" -Body "Attached is the $Mode report for Ticket $TicketNumber ($CustomerName)." -SmtpServer $SmtpServer -Port $SmtpPort -UseSsl $UseSSL -Credential $EmailCreds -Attachments $PdfFile -ErrorAction Stop
+        Send-MailMessage -From $FromAddress -To $ToAddress -Subject "Backup & Recovery Report: $env:COMPUTERNAME ($Mode)" -Body "Attached is the $Mode report for Ticket $TicketNumber ($CustomerName). Disclaimer accepted by user." -SmtpServer $SmtpServer -Port $SmtpPort -UseSsl $UseSSL -Credential $EmailCreds -Attachments $PdfFile -ErrorAction Stop
         Write-Host "   > Email Sent Successfully!" -ForegroundColor Green
     } catch {
         Write-Error "   > Failed to send email. Error: $_"
