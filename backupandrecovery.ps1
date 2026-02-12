@@ -1,18 +1,18 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v3.1 Beta
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v4.3 Beta
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
-    - NEW v3.1: Added Mandatory Liability Disclaimer.
-    - NEW v3.0: "Offline Source" Mode (Backup from Slave Drives).
-    - NEW v3.0: Enhanced Browser Profile Copying (Chrome/Edge/Brave).
+    - UPDATED v4.3: Removed Disclaimer from Final Report.
+    - NEW v4.2: Automated Permission Fixer for Slave Drives (Takeown/Icacls).
+    - UPDATED v3.2: Improved Slave Drive Detection & Permission Handling (/ZB).
     - INCLUDES: Anti-Sleep, Anti-Freeze, Email Reports, Visual Progress Bar.
 #>
 
 # --- 0. CONFIGURATION ---
 $DemoMode = $false
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
-$Version = "3.1 Beta"
+$Version = "4.3 Beta"
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -149,6 +149,30 @@ By proceeding, you acknowledge these risks and agree to hold the creator harmles
     }
 }
 
+function Show-DriveList {
+    # Custom function to show drives with labels clearly
+    Write-Host "   Scanning Drives..." -ForegroundColor DarkGray
+    $drives = Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -or $_.DriveType -eq 'Removable' } | Sort-Object DriveLetter
+    
+    $displayList = @()
+    foreach ($d in $drives) {
+        if ($d.DriveLetter) {
+            $SizeGB = [math]::Round($d.Size / 1GB, 2)
+            $FreeGB = [math]::Round($d.SizeRemaining / 1GB, 2)
+            $Label  = if ($d.FileSystemLabel) { $d.FileSystemLabel } else { "[No Label]" }
+            
+            $displayList += [PSCustomObject]@{
+                Letter = "$($d.DriveLetter):"
+                Label  = $Label
+                "Size(GB)" = $SizeGB
+                "Free(GB)" = $FreeGB
+            }
+        }
+    }
+    
+    $displayList | Format-Table -AutoSize
+}
+
 function Install-GoogleChrome {
     Write-Host "`n[ CHROME INSTALLER ]" -ForegroundColor Yellow
     Write-Host "   Chrome not found. Downloading Enterprise Installer..." -ForegroundColor Cyan
@@ -173,18 +197,53 @@ function Install-GoogleChrome {
     }
 }
 
+# --- NEW v4.2 PERMISSION FIXER ---
+function Fix-SlaveDrivePermissions {
+    param([string]$Path)
+    
+    Write-Host "`n[ PERMISSION CHECK ]" -ForegroundColor Yellow
+    Write-Host "   You have selected a Slave Drive source."
+    Write-Host "   Windows often denies access to User folders from other PCs."
+    Write-Host "   We can attempt to Take Ownership and Grant Admin Access to:" -ForegroundColor Cyan
+    Write-Host "   $Path" -ForegroundColor White
+    
+    $Choice = Read-Host "   > Attempt to fix permissions? (Recommended if Access Denied errors occur) [Y/N]"
+    
+    if ($Choice -match "Y") {
+        Write-Host "   Applying permissions (This may take a moment)..." -ForegroundColor Yellow
+        
+        # 1. Take Ownership
+        Write-Host "   > Step 1: Taking Ownership..." -ForegroundColor DarkGray
+        try {
+            # /F = File/Folder, /R = Recursive, /D Y = Answer Yes to confirmation
+            cmd.exe /c "takeown /F `"$Path`" /R /D Y" | Out-Null
+        } catch { Write-Warning "TakeOwn failed or partial success." }
+
+        # 2. Grant Administrators Full Control
+        Write-Host "   > Step 2: Granting Admin Access..." -ForegroundColor DarkGray
+        try {
+            # /grant Administrators:F = Full Control, /T = Recursive, /C = Continue on error, /Q = Quiet
+            cmd.exe /c "icacls `"$Path`" /grant Administrators:F /T /C /Q" | Out-Null
+            Write-Host "   > Permissions update complete." -ForegroundColor Green
+        } catch { Write-Warning "Icacls failed or partial success." }
+    } else {
+        Write-Host "   Skipping permission fix." -ForegroundColor DarkGray
+    }
+}
+
 function Get-SourceUserFromDrive {
     # Helper to select a user profile from an external drive
     Write-Host "`n[ SELECT SOURCE DRIVE (OFFLINE MODE) ]" -ForegroundColor Yellow
-    $drives = Get-PSDrive -PSProvider FileSystem
-    $drives | Select-Object Name, @{N='Size(GB)';E={"{0:N2}" -f ($_.Used/1GB + $_.Free/1GB)}}, @{N='Free(GB)';E={"{0:N2}" -f ($_.Free/1GB)}}, Root | Format-Table -AutoSize
+    
+    # NEW READOUT
+    Show-DriveList
     
     $SourceDriveLetter = Read-Host "   > Enter Drive Letter of the OLD computer (e.g. E)"
     $SourceDriveLetter = $SourceDriveLetter -replace ":", ""
     $UsersRoot = "$($SourceDriveLetter):\Users"
 
     if (!(Test-Path $UsersRoot)) {
-        Write-Error "   Users folder not found at $UsersRoot. Please check the drive."
+        Write-Error "   Users folder not found at $UsersRoot. Please check the drive letter."
         Start-Sleep -Seconds 2
         return $null
     }
@@ -202,6 +261,10 @@ function Get-SourceUserFromDrive {
     if ($Selection -match "^\d+$" -and $Selection -le $UserFolders.Count) {
         $SelectedUser = $UserFolders[$Selection - 1]
         Write-Host "   Selected: $($SelectedUser.FullName)" -ForegroundColor Green
+        
+        # CALL PERMISSION FIX HERE [v4.2]
+        Fix-SlaveDrivePermissions -Path $SelectedUser.FullName
+        
         return $SelectedUser.FullName
     } else {
         Write-Host "   Invalid selection." -ForegroundColor Red
@@ -229,10 +292,12 @@ function Run-Robocopy {
     else {
         if (Test-Path $Source) {
             # /E = recursive, /XO = exclude older, /R:1 /W:1 = 1 retry, 1 sec wait
-            # /COPY:DAT = Copy Data, Attributes, Time stamps (Avoids Security/Owner issues on FAT32 drives)
-            robocopy $Source $Destination /E /XO /COPY:DAT /R:1 /W:1 /NP /LOG+:"$LogFile" /TEE /XD $Excludes | Out-Null
+            # /COPY:DAT = Copy Data, Attributes, Time stamps
+            # /ZB = Restartable Mode + Backup Mode (CRITICAL FOR SLAVE DRIVES TO BYPASS PERMISSIONS)
+            robocopy $Source $Destination /E /XO /COPY:DAT /ZB /R:1 /W:1 /NP /LOG+:"$LogFile" /TEE /XD $Excludes | Out-Null
             return "Completed"
         } else {
+            # Log skipped items
             Write-Host "   Skipping: Source not found ($Source)" -ForegroundColor DarkGray
             Add-Content -Path $LogFile -Value "SKIPPED: Source Missing - $Source"
             return "Skipped (Not Found)"
@@ -292,8 +357,8 @@ do {
 
     # Target Drive Selection
     Write-Host "`n[ STORAGE DRIVE SELECTION ]" -ForegroundColor Yellow
-    Write-Host "Detecting storage drives..." -ForegroundColor DarkGray
-    Get-PSDrive -PSProvider FileSystem | Select-Object Name, Used, Free, Root | Format-Table -AutoSize
+    # NEW READOUT FOR DESTINATION TOO
+    Show-DriveList
 
     $DriveLetterInput = Read-Host "   > Enter Storage/Backup Drive Letter (e.g. D or E)"
     $DriveLetter = $DriveLetterInput -replace ":", ""
@@ -437,6 +502,7 @@ foreach ($RelPath in $ExtendedPaths.Keys) {
     $ExternalName = $ExtendedPaths[$RelPath]
     
     if ($Mode -eq "BACKUP") {
+        # Check if source exists (using full path from selection)
         if (Test-Path "$SourceProfilePath\$RelPath") {
             if (-not $FoldersMap.Contains($RelPath)) { $FoldersMap[$RelPath] = $ExternalName }
         }
@@ -455,7 +521,7 @@ Write-Host "   Verifying copy list..." -ForegroundColor DarkGray
 foreach ($LocalSubPath in $FoldersMap.Keys) {
     $ExternalSubName = $FoldersMap[$LocalSubPath]
     
-    # Logic uses $SourceProfilePath instead of hardcoded env:USERPROFILE
+    # Logic uses $SourceProfilePath (Could be C:\Users\Admin OR E:\Users\OldUser)
     $LocalFull  = "$SourceProfilePath\$LocalSubPath"
     
     # On RESTORE, we write to Current User
@@ -467,7 +533,13 @@ foreach ($LocalSubPath in $FoldersMap.Keys) {
 
     $ShouldAdd = $false
     if ($Mode -eq "BACKUP") {
-        if (Test-Path $LocalFull) { $ShouldAdd = $true }
+        # Verify Source Exists
+        if (Test-Path $LocalFull) { 
+            $ShouldAdd = $true 
+        } else {
+            # DEBUG: Uncomment below to see why it skips
+            # Write-Host "DEBUG: Skipping $LocalFull - Not Found" -ForegroundColor DarkGray
+        }
     } elseif ($Mode -eq "RESTORE") {
         if (Test-Path $ExternalFull) { $ShouldAdd = $true }
     }
@@ -486,6 +558,11 @@ foreach ($LocalSubPath in $FoldersMap.Keys) {
 $ReportItems = @()
 $TotalItems = $ValidTransferItems.Count
 $CurrentItemIndex = 0
+
+if ($TotalItems -eq 0) {
+    Write-Host "   WARNING: No folders found to copy!" -ForegroundColor Red
+    Write-Host "   Check if the user profile ($SourceProfilePath) is correct." -ForegroundColor Yellow
+}
 
 foreach ($Task in $ValidTransferItems) {
     $CurrentItemIndex++
@@ -561,9 +638,6 @@ $HtmlContent = @"
     <table><thead><tr><th>Data Folder</th><th>Status</th></tr></thead><tbody>$TransferTableRows</tbody></table>
     <p class="warning"><strong>Note on Browser Security:</strong> Browser profile files (Chrome/Edge) have been copied. However, due to Windows DPAPI encryption security, saved passwords are encrypted using the original user's specific account key. They may not auto-decrypt on a new computer unless a cloud sync account was active.</p>
 </div>
-<div class="section">
-    <strong>Disclaimer:</strong> This operation was performed using Beta software (v$Version). Lewis Wiltshire and Apollo Technology accept no liability for data integrity. Verification is the responsibility of the engineer.
-</div>
 <p style="text-align:center; font-size:0.8em; color:#888; margin-top:50px;">&copy; $(Get-Date -Format yyyy) by Apollo Technology. All rights reserved. Created by Apollo Technology (Lewis Wiltshire)</p>
 </body>
 </html>
@@ -604,7 +678,7 @@ if ($EmailEnabled -and $PdfFile -and (Test-Path $PdfFile)) {
     Write-Host "`n[ EMAIL REPORT ]" -ForegroundColor Yellow
     Write-Host "   Sending Email to $ToAddress..." -ForegroundColor Cyan
     try {
-        Send-MailMessage -From $FromAddress -To $ToAddress -Subject "Backup & Recovery Report: $env:COMPUTERNAME ($Mode)" -Body "Attached is the $Mode report for Ticket $TicketNumber ($CustomerName). Disclaimer accepted by user." -SmtpServer $SmtpServer -Port $SmtpPort -UseSsl $UseSSL -Credential $EmailCreds -Attachments $PdfFile -ErrorAction Stop
+        Send-MailMessage -From $FromAddress -To $ToAddress -Subject "Backup & Recovery Report: $env:COMPUTERNAME ($Mode)" -Body "Attached is the $Mode report for Ticket $TicketNumber ($CustomerName)." -SmtpServer $SmtpServer -Port $SmtpPort -UseSsl $UseSSL -Credential $EmailCreds -Attachments $PdfFile -ErrorAction Stop
         Write-Host "   > Email Sent Successfully!" -ForegroundColor Green
     } catch {
         Write-Error "   > Failed to send email. Error: $_"
