@@ -122,7 +122,7 @@ WARNING: You are about to use software currently in BETA (Version $Version).
 1. NO WARRANTY: This script is provided "as-is" without warranty of any kind, express or implied.
 2. DATA INTEGRITY: Do NOT rely on this tool completely. It is an automation utility designed to assist, 
    not replace, professional verification.
-3. LIMITATION OF LIABILITY: Lewis Wiltshire and Apollo Technology accept NO LIABILITY and NO BLAME 
+3. LIMITATION OF LIABILITY: Lewis Wiltshire accepts NO LIABILITY and NO BLAME 
    for any data loss, corruption, missing files, failed transfers, or damages resulting from the use 
    of this script.
 4. RESPONSIBILITY: It is the sole responsibility of the Engineer using this tool to manually verify 
