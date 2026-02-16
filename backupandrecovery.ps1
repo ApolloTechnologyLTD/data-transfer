@@ -1,22 +1,21 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v4.8 Beta
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v5.1 Beta
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
+    - NEW v5.1: ALL logs, reports, and transcripts now generate unique timestamped files per run to prevent overwriting.
+    - NEW v5.0: Streamlined Destination Selection (Just pick a drive letter, script does the rest).
     - UPDATED v4.8: Added a mandatory user warning prompt when Verbose Logging is active.
-    - NEW v4.7: Added Verbose Logging mode (captures all console/error output to C:\temp\backup).
     - UPDATED v4.6: Rebuilt Drive Scanner using .NET DriveInfo. Instant loading, cleanly formatted.
-    - UPDATED v4.5: Added Out-Host to prevent prompt skipping.
-    - UPDATED v4.3: Removed Disclaimer from Final Report.
     - NEW v4.2: Automated Permission Fixer for Slave Drives (Takeown/Icacls).
     - INCLUDES: Anti-Sleep, Anti-Freeze, Email Reports, Visual Progress Bar.
 #>
 
 # --- 0. CONFIGURATION ---
 $DemoMode = $false
-$VerboseMode = $true         # Set to $true to log all script output to C:\temp\backup\backuplogs.txt
+$VerboseMode = $true         # Set to $true to log all script output to C:\temp\backup
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
-$Version = "4.8 Beta"
+$Version = "5.1 Beta"
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -50,15 +49,19 @@ if ($VerboseMode) {
         New-Item -ItemType Directory -Path $VerboseDir -Force | Out-Null
     }
     
+    # Generate a unique timestamped filename for this session
+    $LogTimeStamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
+    $TranscriptPath = "$VerboseDir\backuplogs_$LogTimeStamp.txt"
+    
     # Start capturing all console output, errors, and warnings
-    Start-Transcript -Path "$VerboseDir\backuplogs.txt" -Append -Force | Out-Null
+    Start-Transcript -Path $TranscriptPath -Force | Out-Null
     
     Clear-Host
     Write-Host "`n=================================================================================" -ForegroundColor Magenta
     Write-Host " [ WARNING: VERBOSE LOGGING IS ENABLED ]" -ForegroundColor Red
     Write-Host "=================================================================================" -ForegroundColor Magenta
     Write-Host " All console output, background processes, and errors are currently being recorded."
-    Write-Host " Log File Location: " -NoNewline; Write-Host "$VerboseDir\backuplogs.txt" -ForegroundColor Cyan
+    Write-Host " Log File Location: " -NoNewline; Write-Host $TranscriptPath -ForegroundColor Cyan
     Write-Host "`n Use this mode for debugging purposes only." -ForegroundColor Yellow
     Write-Host "---------------------------------------------------------------------------------" -ForegroundColor DarkGray
     $null = Read-Host " Press [ENTER] to acknowledge and continue"
@@ -111,7 +114,7 @@ function Show-Header {
     ___    ____  ____  __    __    ____     ____________________  ___   ______  __    ____  ________  __
    /   |  / __ \/ __ \/ /   / /   / __ \   /_  __/ ____/ ____/ / / / | / / __ \/ /   / __ \/ ____/\ \/ /
   / /| | / /_/ / / / / /   / /   / / / /    / / / __/ / /   / /_/ /  |/ / / / / /   / / / / / __   \  / 
- / ___ |/ ____/ /_/ / /___/ /___/ /_/ /    / / / /___/ /___/ __  / /|  / /_/ / /___/ /_/ / /___/ /_/ /   / /  
+ / ___ |/ ____/ /_/ / /___/ /___/ /_/ /    / / / /___/ /___/ __  / /|  / /_/ / /___/ /_/ / /_/ /   / /  
 /_/  |_/_/    \____/_____/_____/\____/    /_/ /_____/\____/_/ /_/_/ |_/\____/_____/\____/\____/   /_/   
 '@
     Write-Host $Banner -ForegroundColor Cyan
@@ -220,7 +223,7 @@ function Install-GoogleChrome {
     }
 }
 
-# --- NEW v4.2 PERMISSION FIXER ---
+# --- PERMISSION FIXER ---
 function Fix-SlaveDrivePermissions {
     param([string]$Path)
     
@@ -238,14 +241,12 @@ function Fix-SlaveDrivePermissions {
         # 1. Take Ownership
         Write-Host "   > Step 1: Taking Ownership..." -ForegroundColor DarkGray
         try {
-            # /F = File/Folder, /R = Recursive, /D Y = Answer Yes to confirmation
             cmd.exe /c "takeown /F `"$Path`" /R /D Y" | Out-Null
         } catch { Write-Warning "TakeOwn failed or partial success." }
 
         # 2. Grant Administrators Full Control
         Write-Host "   > Step 2: Granting Admin Access..." -ForegroundColor DarkGray
         try {
-            # /grant Administrators:F = Full Control, /T = Recursive, /C = Continue on error, /Q = Quiet
             cmd.exe /c "icacls `"$Path`" /grant Administrators:F /T /C /Q" | Out-Null
             Write-Host "   > Permissions update complete." -ForegroundColor Green
         } catch { Write-Warning "Icacls failed or partial success." }
@@ -255,10 +256,8 @@ function Fix-SlaveDrivePermissions {
 }
 
 function Get-SourceUserFromDrive {
-    # Helper to select a user profile from an external drive
     Write-Host "`n[ SELECT SOURCE DRIVE (OFFLINE MODE) ]" -ForegroundColor Yellow
     
-    # NEW READOUT
     Show-DriveList
     
     $SourceDriveLetter = Read-Host "   > Enter Drive Letter of the OLD computer (e.g. E)"
@@ -285,7 +284,6 @@ function Get-SourceUserFromDrive {
         $SelectedUser = $UserFolders[$Selection - 1]
         Write-Host "   Selected: $($SelectedUser.FullName)" -ForegroundColor Green
         
-        # CALL PERMISSION FIX HERE [v4.2]
         Fix-SlaveDrivePermissions -Path $SelectedUser.FullName
         
         return $SelectedUser.FullName
@@ -302,7 +300,6 @@ function Run-Robocopy {
         [string]$LogFile
     )
 
-    # Exclude junction points that cause loops or access denied
     $Excludes = @("Temp", "Temporary Internet Files", "Application Data", "History", "Cookies")
 
     if ($DemoMode) {
@@ -314,13 +311,10 @@ function Run-Robocopy {
     }
     else {
         if (Test-Path $Source) {
-            # /E = recursive, /XO = exclude older, /R:1 /W:1 = 1 retry, 1 sec wait
-            # /COPY:DAT = Copy Data, Attributes, Time stamps
             # /ZB = Restartable Mode + Backup Mode (CRITICAL FOR SLAVE DRIVES TO BYPASS PERMISSIONS)
             robocopy $Source $Destination /E /XO /COPY:DAT /ZB /R:1 /W:1 /NP /LOG+:"$LogFile" /TEE /XD $Excludes | Out-Null
             return "Completed"
         } else {
-            # Log skipped items
             Write-Host "   Skipping: Source not found ($Source)" -ForegroundColor DarkGray
             Add-Content -Path $LogFile -Value "SKIPPED: Source Missing - $Source"
             return "Skipped (Not Found)"
@@ -363,7 +357,7 @@ do {
     $EngineerName = Read-Host "   > Enter Engineer Name"
     $TicketNumber = Read-Host "   > Enter Ticket Number"
 
-    # --- NEW: SOURCE SELECTION FOR BACKUP ---
+    # --- SOURCE SELECTION ---
     $SourceProfilePath = $env:USERPROFILE # Default to current user
     
     if ($Mode -eq "BACKUP") {
@@ -383,15 +377,13 @@ do {
             }
         }
     }
-    # ----------------------------------------
 
-    # Target Drive Selection
-    Write-Host "`n[ STORAGE DRIVE SELECTION ]" -ForegroundColor Yellow
+    # --- DESTINATION SELECTION ---
+    Write-Host "`n[ TARGET DRIVE SELECTION ]" -ForegroundColor Yellow
     
-    # NEW READOUT FOR DESTINATION TOO
     Show-DriveList
 
-    $DriveLetterInput = Read-Host "   > Enter Storage/Backup Drive Letter (e.g. D or E)"
+    $DriveLetterInput = Read-Host "   > Enter Target Drive Letter (e.g. D or E)"
     $DriveLetter = $DriveLetterInput -replace ":", ""
 
     if (!(Test-Path "$($DriveLetter):")) {
@@ -401,12 +393,12 @@ do {
         Continue 
     }
 
-    # PATH LOGIC & SEARCH
     $ExternalStorePath = $null
     $CustomerName = $null
 
     if ($Mode -eq "BACKUP") {
         $CustomerName = Read-Host "   > Enter Customer Full Name"
+        # Purely auto-generates the folder on the selected drive letter!
         $ExternalStorePath = "$($DriveLetter):\${TicketNumber}-$($CustomerName)"
         
     } elseif ($Mode -eq "RESTORE") {
@@ -480,19 +472,22 @@ if ($Mode -eq "RESTORE") {
     }
 }
 
+# Generate a unique timestamp for the Robocopy logs and PDF reports
+$RunTimeStamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
+
 $LogPath = "$ExternalStorePath\_Logs"
 
 # Setup Logs
 if (!(Test-Path $ExternalStorePath)) { New-Item -ItemType Directory -Path $ExternalStorePath -Force | Out-Null }
 if (!(Test-Path $LogPath)) { New-Item -ItemType Directory -Path $LogPath -Force | Out-Null }
-$MainLog = "$LogPath\${Mode}_Log.txt"
+
+$MainLog = "$LogPath\${Mode}_Log_$RunTimeStamp.txt"
 Add-Content -Path $MainLog -Value "Operation: $Mode | Date: $(Get-Date)"
 
 # Stop Processes - CRITICAL FOR BROWSER DATA
 Write-Host "`n[ SYSTEM PREP ]" -ForegroundColor Yellow
 if (-not $DemoMode) {
     Write-Host "   Force closing Browsers and Outlook to unlock database files..." -ForegroundColor Red
-    # Added braves, operas and generic names to ensure file release
     Stop-Process -Name "chrome", "msedge", "outlook", "firefox", "brave", "opera", "iexplore" -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
 }
@@ -500,7 +495,6 @@ if (-not $DemoMode) {
 # --- 8. MAPPING & EXECUTION ---
 Write-Host "`n[ STARTING TRANSFER ]" -ForegroundColor Yellow
 
-# Initialize Map - UPDATED FOR BETTER BROWSER COVERAGE
 $FoldersMap = [ordered]@{
     "Desktop"   = "Desktop"
     "Documents" = "Documents"
@@ -508,32 +502,24 @@ $FoldersMap = [ordered]@{
     "Pictures"  = "Pictures"
     "Music"     = "Music"
     "Videos"    = "Videos"
-    
-    # BROWSER PROFILES (Main)
     "AppData\Local\Google\Chrome\User Data" = "Chrome_UserData"
     "AppData\Local\Microsoft\Edge\User Data" = "Edge_UserData"
-    
-    # OUTLOOK
     "AppData\Local\Microsoft\Outlook"       = "Outlook_AppData"
     "Documents\Outlook Files"               = "Outlook_Documents"
 }
 
-# Extended Paths (Silent Detection)
 $ExtendedPaths = @{
     "AppData\Roaming\Mozilla\Firefox"             = "Firefox_Data"
     "AppData\Roaming\Opera Software\Opera Stable" = "Opera_Data"
     "AppData\Local\BraveSoftware\Brave-Browser\User Data" = "Brave_Data"
     "AppData\Roaming"                             = "AppData_Roaming"
-    # Capture Local AppData Root (sometimes contains other app configs)
-    # "AppData\Local"                             = "AppData_Local" 
 }
 
-# Silent Detection (Populate Map with detected paths)
+# Silent Detection 
 foreach ($RelPath in $ExtendedPaths.Keys) {
     $ExternalName = $ExtendedPaths[$RelPath]
     
     if ($Mode -eq "BACKUP") {
-        # Check if source exists (using full path from selection)
         if (Test-Path "$SourceProfilePath\$RelPath") {
             if (-not $FoldersMap.Contains($RelPath)) { $FoldersMap[$RelPath] = $ExternalName }
         }
@@ -552,10 +538,8 @@ Write-Host "   Verifying copy list..." -ForegroundColor DarkGray
 foreach ($LocalSubPath in $FoldersMap.Keys) {
     $ExternalSubName = $FoldersMap[$LocalSubPath]
     
-    # Logic uses $SourceProfilePath (Could be C:\Users\Admin OR E:\Users\OldUser)
     $LocalFull  = "$SourceProfilePath\$LocalSubPath"
     
-    # On RESTORE, we write to Current User
     if ($Mode -eq "RESTORE") {
         $LocalFull = "$env:USERPROFILE\$LocalSubPath"
     }
@@ -564,13 +548,7 @@ foreach ($LocalSubPath in $FoldersMap.Keys) {
 
     $ShouldAdd = $false
     if ($Mode -eq "BACKUP") {
-        # Verify Source Exists
-        if (Test-Path $LocalFull) { 
-            $ShouldAdd = $true 
-        } else {
-            # DEBUG: Uncomment below to see why it skips
-            # Write-Host "DEBUG: Skipping $LocalFull - Not Found" -ForegroundColor DarkGray
-        }
+        if (Test-Path $LocalFull) { $ShouldAdd = $true }
     } elseif ($Mode -eq "RESTORE") {
         if (Test-Path $ExternalFull) { $ShouldAdd = $true }
     }
@@ -598,24 +576,17 @@ if ($TotalItems -eq 0) {
 foreach ($Task in $ValidTransferItems) {
     $CurrentItemIndex++
     
-    # Calculate Percentage
     $PercentComplete = ($CurrentItemIndex / $TotalItems) * 100
     
-    # Update Progress Bar
     Write-Progress -Activity "Migrating Data ($Mode)" -Status "Processing Folder $CurrentItemIndex of $TotalItems : $($Task.LocalPath)" -PercentComplete $PercentComplete
     
-    # Visual Output to Console
     Write-Host "   [$CurrentItemIndex / $TotalItems] Processing: $($Task.LocalPath)" -ForegroundColor Green -NoNewline
     Write-Host " ..." -ForegroundColor Gray
 
-    # Run Copy
     $Result = Run-Robocopy -Source $Task.Src -Destination $Task.Dst -LogFile $MainLog
-    
-    # Report
     $ReportItems += [PSCustomObject]@{ Item = if ($Mode -eq "BACKUP") {$Task.LocalPath} else {$Task.ExtName}; Status = $Result }
 }
 
-# Close Progress Bar
 Write-Progress -Activity "Migrating Data ($Mode)" -Completed
 
 # --- 9. REPORT GENERATION ---
@@ -629,8 +600,8 @@ foreach ($Row in $ReportItems) {
     $TransferTableRows += "<tr><td>$($Row.Item)</td><td><span style='color:$StatusColor'>$($Row.Status)</span></td></tr>"
 }
 
-$HtmlFile = "$ExternalStorePath\${Mode}_Report.html"
-$PdfFile  = "$ExternalStorePath\${Mode}_Report.pdf"
+$HtmlFile = "$ExternalStorePath\${Mode}_Report_$RunTimeStamp.html"
+$PdfFile  = "$ExternalStorePath\${Mode}_Report_$RunTimeStamp.pdf"
 
 $HtmlContent = @"
 <!DOCTYPE html>
