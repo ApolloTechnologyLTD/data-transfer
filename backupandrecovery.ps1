@@ -1,8 +1,9 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v4.3 Beta
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v4.5 Beta
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
+    - UPDATED v4.5: Reverted drive scanner to Get-PSDrive for instant loading. Added Out-Host to prevent prompt skipping.
     - UPDATED v4.3: Removed Disclaimer from Final Report.
     - NEW v4.2: Automated Permission Fixer for Slave Drives (Takeown/Icacls).
     - UPDATED v3.2: Improved Slave Drive Detection & Permission Handling (/ZB).
@@ -12,7 +13,7 @@
 # --- 0. CONFIGURATION ---
 $DemoMode = $false
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
-$Version = "4.3 Beta"
+$Version = "4.5 Beta"
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -150,27 +151,10 @@ By proceeding, you acknowledge these risks and agree to hold the creator harmles
 }
 
 function Show-DriveList {
-    # Custom function to show drives with labels clearly
-    Write-Host "   Scanning Drives..." -ForegroundColor DarkGray
-    $drives = Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -or $_.DriveType -eq 'Removable' } | Sort-Object DriveLetter
-    
-    $displayList = @()
-    foreach ($d in $drives) {
-        if ($d.DriveLetter) {
-            $SizeGB = [math]::Round($d.Size / 1GB, 2)
-            $FreeGB = [math]::Round($d.SizeRemaining / 1GB, 2)
-            $Label  = if ($d.FileSystemLabel) { $d.FileSystemLabel } else { "[No Label]" }
-            
-            $displayList += [PSCustomObject]@{
-                Letter = "$($d.DriveLetter):"
-                Label  = $Label
-                "Size(GB)" = $SizeGB
-                "Free(GB)" = $FreeGB
-            }
-        }
-    }
-    
-    $displayList | Format-Table -AutoSize
+    # Using the exact same ultra-fast drive readout method as before.
+    # Out-Host forces PowerShell to display the table immediately so it doesn't skip.
+    Write-Host "   Detecting drives..." -ForegroundColor DarkGray
+    Get-PSDrive -PSProvider FileSystem | Select-Object Name, Used, Free, Root | Format-Table -AutoSize | Out-Host
 }
 
 function Install-GoogleChrome {
