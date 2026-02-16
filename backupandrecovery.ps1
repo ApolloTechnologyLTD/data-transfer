@@ -1,19 +1,19 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v4.5 Beta
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v4.6 Beta
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
-    - UPDATED v4.5: Reverted drive scanner to Get-PSDrive for instant loading. Added Out-Host to prevent prompt skipping.
+    - UPDATED v4.6: Rebuilt Drive Scanner using .NET DriveInfo. Instant loading, avoids hangs, and formats sizes cleanly in GB with Volume Names.
+    - UPDATED v4.5: Added Out-Host to prevent prompt skipping.
     - UPDATED v4.3: Removed Disclaimer from Final Report.
     - NEW v4.2: Automated Permission Fixer for Slave Drives (Takeown/Icacls).
-    - UPDATED v3.2: Improved Slave Drive Detection & Permission Handling (/ZB).
     - INCLUDES: Anti-Sleep, Anti-Freeze, Email Reports, Visual Progress Bar.
 #>
 
 # --- 0. CONFIGURATION ---
 $DemoMode = $false
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
-$Version = "4.5 Beta"
+$Version = "4.6 Beta"
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -151,10 +151,24 @@ By proceeding, you acknowledge these risks and agree to hold the creator harmles
 }
 
 function Show-DriveList {
-    # Using the exact same ultra-fast drive readout method as before.
-    # Out-Host forces PowerShell to display the table immediately so it doesn't skip.
+    # Using .NET DriveInfo. Instant loading, zero hangs, accurate names, and clean GB numbers.
     Write-Host "   Detecting drives..." -ForegroundColor DarkGray
-    Get-PSDrive -PSProvider FileSystem | Select-Object Name, Used, Free, Root | Format-Table -AutoSize | Out-Host
+    
+    $drives = [System.IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady }
+    $displayList = @()
+    
+    foreach ($d in $drives) {
+        $Label = if ([string]::IsNullOrWhiteSpace($d.VolumeLabel)) { "[No Label]" } else { $d.VolumeLabel }
+        $displayList += [PSCustomObject]@{
+            Letter     = $d.Name.Substring(0,2) # Gets format like "C:"
+            Name       = $Label
+            "Size(GB)" = [math]::Round($d.TotalSize / 1GB, 2)
+            "Free(GB)" = [math]::Round($d.TotalFreeSpace / 1GB, 2)
+        }
+    }
+    
+    # Out-Host ensures it renders synchronously and doesn't get skipped by the next prompt
+    $displayList | Format-Table -AutoSize | Out-Host
 }
 
 function Install-GoogleChrome {
@@ -341,6 +355,7 @@ do {
 
     # Target Drive Selection
     Write-Host "`n[ STORAGE DRIVE SELECTION ]" -ForegroundColor Yellow
+    
     # NEW READOUT FOR DESTINATION TOO
     Show-DriveList
 
