@@ -1,9 +1,10 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v4.6 Beta
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v4.7 Beta
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
-    - UPDATED v4.6: Rebuilt Drive Scanner using .NET DriveInfo. Instant loading, avoids hangs, and formats sizes cleanly in GB with Volume Names.
+    - NEW v4.7: Added Verbose Logging mode (captures all console/error output to C:\temp\backup).
+    - UPDATED v4.6: Rebuilt Drive Scanner using .NET DriveInfo. Instant loading, cleanly formatted.
     - UPDATED v4.5: Added Out-Host to prevent prompt skipping.
     - UPDATED v4.3: Removed Disclaimer from Final Report.
     - NEW v4.2: Automated Permission Fixer for Slave Drives (Takeown/Icacls).
@@ -12,8 +13,9 @@
 
 # --- 0. CONFIGURATION ---
 $DemoMode = $false
+$VerboseMode = $true         # Set to $true to log all script output to C:\temp\backup\backuplogs.txt
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
-$Version = "4.6 Beta"
+$Version = "4.7 Beta"
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -38,6 +40,18 @@ if (!($isAdmin)) {
         Pause
         Exit
     }
+}
+
+# --- 1.5 VERBOSE LOGGING SETUP ---
+if ($VerboseMode) {
+    $VerboseDir = "C:\temp\backup"
+    if (!(Test-Path $VerboseDir)) {
+        New-Item -ItemType Directory -Path $VerboseDir -Force | Out-Null
+    }
+    # Start capturing all console output, errors, and warnings
+    Start-Transcript -Path "$VerboseDir\backuplogs.txt" -Append -Force | Out-Null
+    Write-Host "[VERBOSE] Global logging enabled. Output writing to $VerboseDir\backuplogs.txt" -ForegroundColor Cyan
+    Start-Sleep -Seconds 1
 }
 
 # --- 2. PREVENT FREEZING & SLEEPING ---
@@ -144,6 +158,7 @@ By proceeding, you acknowledge these risks and agree to hold the creator harmles
         }
         elseif ($Key.Key -eq 'N' -or $Key.Key -eq 'Escape') {
             Write-Host "`n   User declined disclaimer. Exiting..." -ForegroundColor Red
+            if ($VerboseMode) { Stop-Transcript | Out-Null }
             Start-Sleep -Seconds 1
             Exit
         }
@@ -319,8 +334,15 @@ $MenuSelection = Read-Host "   > Enter Option (1, 2, or 3)"
 switch ($MenuSelection) {
     '1' { $Mode = "BACKUP" }
     '2' { $Mode = "RESTORE" }
-    '3' { Exit }
-    Default { Write-Host "Invalid selection."; Pause; Exit }
+    '3' { 
+        if ($VerboseMode) { Stop-Transcript | Out-Null }
+        Exit 
+    }
+    Default { 
+        Write-Host "Invalid selection."; Pause; 
+        if ($VerboseMode) { Stop-Transcript | Out-Null }
+        Exit 
+    }
 }
 
 # --- 6. INPUT COLLECTION LOOP ---
@@ -689,4 +711,11 @@ try { [SleepUtils]::SetThreadExecutionState(0x80000000) | Out-Null } catch { }
 
 Write-Host "`n[ COMPLETE ]" -ForegroundColor Green
 Write-Host "Operation finished."
+
+# --- STOP TRANSCRIPT ---
+if ($VerboseMode) {
+    Write-Host "Stopping Verbose Logging..." -ForegroundColor DarkGray
+    Stop-Transcript | Out-Null
+}
+
 Pause
