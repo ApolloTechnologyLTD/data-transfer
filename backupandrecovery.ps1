@@ -1,8 +1,10 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v5.1 Beta
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v5.2 Beta
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
+    - NEW v5.2: ICACLS now grants SYSTEM and Admin access using universal SIDs.
+    - NEW v5.2: Forced explicit logging of all native EXE output and errors to bypass Transcript quirks.
     - NEW v5.1: ALL logs, reports, and transcripts now generate unique timestamped files per run to prevent overwriting.
     - NEW v5.0: Streamlined Destination Selection (Just pick a drive letter, script does the rest).
     - UPDATED v4.8: Added a mandatory user warning prompt when Verbose Logging is active.
@@ -15,7 +17,8 @@
 $DemoMode = $false
 $VerboseMode = $true         # Set to $true to log all script output to C:\temp\backup
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
-$Version = "5.1 Beta"
+$Version = "5.2 Beta"
+[string]$global:TranscriptPath = "" # Global variable to manually force errors into the log
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -51,17 +54,17 @@ if ($VerboseMode) {
     
     # Generate a unique timestamped filename for this session
     $LogTimeStamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
-    $TranscriptPath = "$VerboseDir\backuplogs_$LogTimeStamp.txt"
+    $global:TranscriptPath = "$VerboseDir\backuplogs_$LogTimeStamp.txt"
     
     # Start capturing all console output, errors, and warnings
-    Start-Transcript -Path $TranscriptPath -Force | Out-Null
+    Start-Transcript -Path $global:TranscriptPath -Force | Out-Null
     
     Clear-Host
     Write-Host "`n=================================================================================" -ForegroundColor Magenta
     Write-Host " [ WARNING: VERBOSE LOGGING IS ENABLED ]" -ForegroundColor Red
     Write-Host "=================================================================================" -ForegroundColor Magenta
     Write-Host " All console output, background processes, and errors are currently being recorded."
-    Write-Host " Log File Location: " -NoNewline; Write-Host $TranscriptPath -ForegroundColor Cyan
+    Write-Host " Log File Location: " -NoNewline; Write-Host $global:TranscriptPath -ForegroundColor Cyan
     Write-Host "`n Use this mode for debugging purposes only." -ForegroundColor Yellow
     Write-Host "---------------------------------------------------------------------------------" -ForegroundColor DarkGray
     $null = Read-Host " Press [ENTER] to acknowledge and continue"
@@ -230,7 +233,7 @@ function Fix-SlaveDrivePermissions {
     Write-Host "`n[ PERMISSION CHECK ]" -ForegroundColor Yellow
     Write-Host "   You have selected a Slave Drive source."
     Write-Host "   Windows often denies access to User folders from other PCs."
-    Write-Host "   We can attempt to Take Ownership and Grant Admin Access to:" -ForegroundColor Cyan
+    Write-Host "   We can attempt to Take Ownership and Grant Admin+SYSTEM Access to:" -ForegroundColor Cyan
     Write-Host "   $Path" -ForegroundColor White
     
     $Choice = Read-Host "   > Attempt to fix permissions? (Recommended if Access Denied errors occur) [Y/N]"
@@ -238,18 +241,30 @@ function Fix-SlaveDrivePermissions {
     if ($Choice -match "Y") {
         Write-Host "   Applying permissions (This may take a moment)..." -ForegroundColor Yellow
         
-        # 1. Take Ownership
+        # 1. Take Ownership (/A assigns ownership to Administrators group)
         Write-Host "   > Step 1: Taking Ownership..." -ForegroundColor DarkGray
         try {
-            cmd.exe /c "takeown /F `"$Path`" /R /D Y" | Out-Null
-        } catch { Write-Warning "TakeOwn failed or partial success." }
+            $TakeownOutput = cmd.exe /c "takeown /F `"$Path`" /A /R /D Y 2>&1"
+            if ($VerboseMode -and $global:TranscriptPath) {
+                Add-Content -Path $global:TranscriptPath -Value "`n--- TAKEOWN LOG FOR $Path ---`n$TakeownOutput`n---------------------------"
+            }
+        } catch { 
+            Write-Warning "TakeOwn encountered an exception." 
+            if ($VerboseMode -and $global:TranscriptPath) { Add-Content -Path $global:TranscriptPath -Value "TAKEOWN EXCEPTION: $_" }
+        }
 
-        # 2. Grant Administrators Full Control
-        Write-Host "   > Step 2: Granting Admin Access..." -ForegroundColor DarkGray
+        # 2. Grant Administrators (*S-1-5-32-544) and SYSTEM (*S-1-5-18) Full Control
+        Write-Host "   > Step 2: Granting Admin & SYSTEM Access..." -ForegroundColor DarkGray
         try {
-            cmd.exe /c "icacls `"$Path`" /grant Administrators:F /T /C /Q" | Out-Null
+            $IcaclsOutput = cmd.exe /c "icacls `"$Path`" /grant `"*S-1-5-32-544:F`" /grant `"*S-1-5-18:F`" /T /C /Q 2>&1"
+            if ($VerboseMode -and $global:TranscriptPath) {
+                Add-Content -Path $global:TranscriptPath -Value "`n--- ICACLS LOG FOR $Path ---`n$IcaclsOutput`n---------------------------"
+            }
             Write-Host "   > Permissions update complete." -ForegroundColor Green
-        } catch { Write-Warning "Icacls failed or partial success." }
+        } catch { 
+            Write-Warning "Icacls encountered an exception." 
+            if ($VerboseMode -and $global:TranscriptPath) { Add-Content -Path $global:TranscriptPath -Value "ICACLS EXCEPTION: $_" }
+        }
     } else {
         Write-Host "   Skipping permission fix." -ForegroundColor DarkGray
     }
@@ -265,13 +280,29 @@ function Get-SourceUserFromDrive {
     $UsersRoot = "$($SourceDriveLetter):\Users"
 
     if (!(Test-Path $UsersRoot)) {
-        Write-Error "   Users folder not found at $UsersRoot. Please check the drive letter."
+        $ErrorMsg = "   Users folder not found at $UsersRoot. Please check the drive letter."
+        Write-Error $ErrorMsg
+        if ($VerboseMode -and $global:TranscriptPath) { Add-Content -Path $global:TranscriptPath -Value "ERROR: $ErrorMsg" }
         Start-Sleep -Seconds 2
         return $null
     }
 
     Write-Host "`n[ DETECTED USER PROFILES ]" -ForegroundColor Yellow
-    $UserFolders = Get-ChildItem -Path $UsersRoot -Directory | Where-Object { $_.Name -notin "Public", "Default", "All Users", "Default User" }
+    
+    try {
+        # Using 2>&1 to force any Access Denied errors into the catch/log block
+        $UserFolders = Get-ChildItem -Path $UsersRoot -Directory -ErrorAction Stop 2>&1 | Where-Object { $_.Name -notin "Public", "Default", "All Users", "Default User" }
+    } catch {
+        Write-Host "   [!] Access Denied or Error reading $UsersRoot" -ForegroundColor Red
+        if ($VerboseMode -and $global:TranscriptPath) { Add-Content -Path $global:TranscriptPath -Value "`n--- GET-CHILDITEM EXCEPTION ---`n$_`n-------------------------------" }
+        Start-Sleep -Seconds 2
+        return $null
+    }
+    
+    if ($null -eq $UserFolders -or $UserFolders.Count -eq 0) {
+        Write-Host "   No profiles found or Access Denied to contents." -ForegroundColor Red
+        return $null
+    }
     
     $i = 1
     foreach ($u in $UserFolders) {
