@@ -1,8 +1,9 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v4.7 Beta
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v4.8 Beta
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
+    - UPDATED v4.8: Added a mandatory user warning prompt when Verbose Logging is active.
     - NEW v4.7: Added Verbose Logging mode (captures all console/error output to C:\temp\backup).
     - UPDATED v4.6: Rebuilt Drive Scanner using .NET DriveInfo. Instant loading, cleanly formatted.
     - UPDATED v4.5: Added Out-Host to prevent prompt skipping.
@@ -15,7 +16,7 @@
 $DemoMode = $false
 $VerboseMode = $true         # Set to $true to log all script output to C:\temp\backup\backuplogs.txt
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
-$Version = "4.7 Beta"
+$Version = "4.8 Beta"
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -42,16 +43,25 @@ if (!($isAdmin)) {
     }
 }
 
-# --- 1.5 VERBOSE LOGGING SETUP ---
+# --- 1.5 VERBOSE LOGGING SETUP & WARNING ---
 if ($VerboseMode) {
     $VerboseDir = "C:\temp\backup"
     if (!(Test-Path $VerboseDir)) {
         New-Item -ItemType Directory -Path $VerboseDir -Force | Out-Null
     }
+    
     # Start capturing all console output, errors, and warnings
     Start-Transcript -Path "$VerboseDir\backuplogs.txt" -Append -Force | Out-Null
-    Write-Host "[VERBOSE] Global logging enabled. Output writing to $VerboseDir\backuplogs.txt" -ForegroundColor Cyan
-    Start-Sleep -Seconds 1
+    
+    Clear-Host
+    Write-Host "`n=================================================================================" -ForegroundColor Magenta
+    Write-Host " [ WARNING: VERBOSE LOGGING IS ENABLED ]" -ForegroundColor Red
+    Write-Host "=================================================================================" -ForegroundColor Magenta
+    Write-Host " All console output, background processes, and errors are currently being recorded."
+    Write-Host " Log File Location: " -NoNewline; Write-Host "$VerboseDir\backuplogs.txt" -ForegroundColor Cyan
+    Write-Host "`n Use this mode for debugging purposes only." -ForegroundColor Yellow
+    Write-Host "---------------------------------------------------------------------------------" -ForegroundColor DarkGray
+    $null = Read-Host " Press [ENTER] to acknowledge and continue"
 }
 
 # --- 2. PREVENT FREEZING & SLEEPING ---
@@ -101,7 +111,7 @@ function Show-Header {
     ___    ____  ____  __    __    ____     ____________________  ___   ______  __    ____  ________  __
    /   |  / __ \/ __ \/ /   / /   / __ \   /_  __/ ____/ ____/ / / / | / / __ \/ /   / __ \/ ____/\ \/ /
   / /| | / /_/ / / / / /   / /   / / / /    / / / __/ / /   / /_/ /  |/ / / / / /   / / / / / __   \  / 
- / ___ |/ ____/ /_/ / /___/ /___/ /_/ /    / / / /___/ /___/ __  / /|  / /_/ / /___/ /_/ / /_/ /   / /  
+ / ___ |/ ____/ /_/ / /___/ /___/ /_/ /    / / / /___/ /___/ __  / /|  / /_/ / /___/ /_/ / /___/ /_/ /   / /  
 /_/  |_/_/    \____/_____/_____/\____/    /_/ /_____/\____/_/ /_/_/ |_/\____/_____/\____/\____/   /_/   
 '@
     Write-Host $Banner -ForegroundColor Cyan
