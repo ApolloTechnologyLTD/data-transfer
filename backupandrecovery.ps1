@@ -14,7 +14,7 @@
 
 # --- 0. CONFIGURATION ---
 $DemoMode = $false
-$VerboseMode = $true         # Set to $true to log all script output to C:\temp\backup
+$VerboseMode = $false         # Set to $true to log all script output to C:\temp\backup
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
 $Version = "5.3 Beta"
 
