@@ -1,15 +1,14 @@
 <#
 .SYNOPSIS
-    Apollo Technology Data Migration Utility (Smart Restore & Backup) v5.2 Beta
+    Apollo Technology Data Migration Utility (Smart Restore & Backup) v5.3 Beta
 .DESCRIPTION
     Menu-driven utility to Backup data or Restore data.
-    - NEW v5.2: ICACLS now grants SYSTEM and Admin access using universal SIDs.
-    - NEW v5.2: Forced explicit logging of all native EXE output and errors to bypass Transcript quirks.
-    - NEW v5.1: ALL logs, reports, and transcripts now generate unique timestamped files per run to prevent overwriting.
-    - NEW v5.0: Streamlined Destination Selection (Just pick a drive letter, script does the rest).
-    - UPDATED v4.8: Added a mandatory user warning prompt when Verbose Logging is active.
+    - FIXED v5.3: Transcript locking bug resolved. All permission logs now output to console to be naturally captured.
+    - FIXED v5.3: Bulletproofed Drive Letter inputs to prevent path creation crashes.
+    - NEW v5.3: ICACLS now explicitly grants SYSTEM and Admin Full Control using universal SIDs.
+    - NEW v5.1: ALL logs, reports, and transcripts now generate unique timestamped files per run.
+    - NEW v5.0: Streamlined Destination Selection.
     - UPDATED v4.6: Rebuilt Drive Scanner using .NET DriveInfo. Instant loading, cleanly formatted.
-    - NEW v4.2: Automated Permission Fixer for Slave Drives (Takeown/Icacls).
     - INCLUDES: Anti-Sleep, Anti-Freeze, Email Reports, Visual Progress Bar.
 #>
 
@@ -17,8 +16,7 @@
 $DemoMode = $false
 $VerboseMode = $true         # Set to $true to log all script output to C:\temp\backup
 $LogoUrl = "https://raw.githubusercontent.com/ApolloTechnologyLTD/computer-health-check/main/Apollo%20Cropped.png"
-$Version = "5.2 Beta"
-[string]$global:TranscriptPath = "" # Global variable to manually force errors into the log
+$Version = "5.3 Beta"
 
 # --- EMAIL SETTINGS ---
 $EmailEnabled = $false       # Set to $true to enable email
@@ -54,17 +52,17 @@ if ($VerboseMode) {
     
     # Generate a unique timestamped filename for this session
     $LogTimeStamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
-    $global:TranscriptPath = "$VerboseDir\backuplogs_$LogTimeStamp.txt"
+    $TranscriptPath = "$VerboseDir\backuplogs_$LogTimeStamp.txt"
     
     # Start capturing all console output, errors, and warnings
-    Start-Transcript -Path $global:TranscriptPath -Force | Out-Null
+    Start-Transcript -Path $TranscriptPath -Force | Out-Null
     
     Clear-Host
     Write-Host "`n=================================================================================" -ForegroundColor Magenta
     Write-Host " [ WARNING: VERBOSE LOGGING IS ENABLED ]" -ForegroundColor Red
     Write-Host "=================================================================================" -ForegroundColor Magenta
     Write-Host " All console output, background processes, and errors are currently being recorded."
-    Write-Host " Log File Location: " -NoNewline; Write-Host $global:TranscriptPath -ForegroundColor Cyan
+    Write-Host " Log File Location: " -NoNewline; Write-Host $TranscriptPath -ForegroundColor Cyan
     Write-Host "`n Use this mode for debugging purposes only." -ForegroundColor Yellow
     Write-Host "---------------------------------------------------------------------------------" -ForegroundColor DarkGray
     $null = Read-Host " Press [ENTER] to acknowledge and continue"
@@ -244,26 +242,29 @@ function Fix-SlaveDrivePermissions {
         # 1. Take Ownership (/A assigns ownership to Administrators group)
         Write-Host "   > Step 1: Taking Ownership..." -ForegroundColor DarkGray
         try {
+            # 2>&1 forces error stream into output stream. Write-Host naturally feeds the running Transcript.
             $TakeownOutput = cmd.exe /c "takeown /F `"$Path`" /A /R /D Y 2>&1"
-            if ($VerboseMode -and $global:TranscriptPath) {
-                Add-Content -Path $global:TranscriptPath -Value "`n--- TAKEOWN LOG FOR $Path ---`n$TakeownOutput`n---------------------------"
+            if ($VerboseMode) {
+                Write-Host "`n--- RAW TAKEOWN OUTPUT ---" -ForegroundColor DarkGray
+                Write-Host $TakeownOutput -ForegroundColor Gray
+                Write-Host "--------------------------`n" -ForegroundColor DarkGray
             }
         } catch { 
-            Write-Warning "TakeOwn encountered an exception." 
-            if ($VerboseMode -and $global:TranscriptPath) { Add-Content -Path $global:TranscriptPath -Value "TAKEOWN EXCEPTION: $_" }
+            Write-Warning "TakeOwn encountered an exception: $_" 
         }
 
         # 2. Grant Administrators (*S-1-5-32-544) and SYSTEM (*S-1-5-18) Full Control
         Write-Host "   > Step 2: Granting Admin & SYSTEM Access..." -ForegroundColor DarkGray
         try {
             $IcaclsOutput = cmd.exe /c "icacls `"$Path`" /grant `"*S-1-5-32-544:F`" /grant `"*S-1-5-18:F`" /T /C /Q 2>&1"
-            if ($VerboseMode -and $global:TranscriptPath) {
-                Add-Content -Path $global:TranscriptPath -Value "`n--- ICACLS LOG FOR $Path ---`n$IcaclsOutput`n---------------------------"
+            if ($VerboseMode) {
+                Write-Host "`n--- RAW ICACLS OUTPUT ---" -ForegroundColor DarkGray
+                Write-Host $IcaclsOutput -ForegroundColor Gray
+                Write-Host "-------------------------`n" -ForegroundColor DarkGray
             }
             Write-Host "   > Permissions update complete." -ForegroundColor Green
         } catch { 
-            Write-Warning "Icacls encountered an exception." 
-            if ($VerboseMode -and $global:TranscriptPath) { Add-Content -Path $global:TranscriptPath -Value "ICACLS EXCEPTION: $_" }
+            Write-Warning "Icacls encountered an exception: $_" 
         }
     } else {
         Write-Host "   Skipping permission fix." -ForegroundColor DarkGray
@@ -275,14 +276,14 @@ function Get-SourceUserFromDrive {
     
     Show-DriveList
     
-    $SourceDriveLetter = Read-Host "   > Enter Drive Letter of the OLD computer (e.g. E)"
-    $SourceDriveLetter = $SourceDriveLetter -replace ":", ""
+    $SourceDriveLetterInput = Read-Host "   > Enter Drive Letter of the OLD computer (e.g. E)"
+    # Strip everything except alphabet characters to prevent path corruption
+    $SourceDriveLetter = $SourceDriveLetterInput -replace '[^a-zA-Z]', ''
+    
     $UsersRoot = "$($SourceDriveLetter):\Users"
 
     if (!(Test-Path $UsersRoot)) {
-        $ErrorMsg = "   Users folder not found at $UsersRoot. Please check the drive letter."
-        Write-Error $ErrorMsg
-        if ($VerboseMode -and $global:TranscriptPath) { Add-Content -Path $global:TranscriptPath -Value "ERROR: $ErrorMsg" }
+        Write-Error "   Users folder not found at $UsersRoot. Please check the drive letter."
         Start-Sleep -Seconds 2
         return $null
     }
@@ -290,20 +291,20 @@ function Get-SourceUserFromDrive {
     Write-Host "`n[ DETECTED USER PROFILES ]" -ForegroundColor Yellow
     
     try {
-        # Using 2>&1 to force any Access Denied errors into the catch/log block
         $UserFolders = Get-ChildItem -Path $UsersRoot -Directory -ErrorAction Stop 2>&1 | Where-Object { $_.Name -notin "Public", "Default", "All Users", "Default User" }
     } catch {
         Write-Host "   [!] Access Denied or Error reading $UsersRoot" -ForegroundColor Red
-        if ($VerboseMode -and $global:TranscriptPath) { Add-Content -Path $global:TranscriptPath -Value "`n--- GET-CHILDITEM EXCEPTION ---`n$_`n-------------------------------" }
+        if ($VerboseMode) { Write-Host "`n--- READ ERROR: $_ ---`n" -ForegroundColor DarkGray }
         Start-Sleep -Seconds 2
         return $null
     }
     
     if ($null -eq $UserFolders -or $UserFolders.Count -eq 0) {
         Write-Host "   No profiles found or Access Denied to contents." -ForegroundColor Red
+        Start-Sleep -Seconds 2
         return $null
     }
-    
+
     $i = 1
     foreach ($u in $UserFolders) {
         Write-Host "   $i. $($u.Name)"
@@ -334,7 +335,7 @@ function Run-Robocopy {
     $Excludes = @("Temp", "Temporary Internet Files", "Application Data", "History", "Cookies")
 
     if ($DemoMode) {
-        if (!(Test-Path $Destination)) { New-Item -ItemType Directory -Path $Destination -Force | Out-Null }
+        if (!(Test-Path $Destination)) { $null = New-Item -ItemType Directory -Path $Destination -Force }
         Write-Host "   [DEMO] Processing: $Source" -ForegroundColor Magenta
         Add-Content -Path $LogFile -Value "DEMO COPY: $Source -> $Destination"
         Start-Sleep -Milliseconds 100
@@ -415,7 +416,8 @@ do {
     Show-DriveList
 
     $DriveLetterInput = Read-Host "   > Enter Target Drive Letter (e.g. D or E)"
-    $DriveLetter = $DriveLetterInput -replace ":", ""
+    # Strip everything except alphabet characters to prevent path corruption
+    $DriveLetter = $DriveLetterInput -replace '[^a-zA-Z]', ''
 
     if (!(Test-Path "$($DriveLetter):")) {
         Write-Error "Drive $($DriveLetter): not found."
@@ -508,9 +510,13 @@ $RunTimeStamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 
 $LogPath = "$ExternalStorePath\_Logs"
 
-# Setup Logs
-if (!(Test-Path $ExternalStorePath)) { New-Item -ItemType Directory -Path $ExternalStorePath -Force | Out-Null }
-if (!(Test-Path $LogPath)) { New-Item -ItemType Directory -Path $LogPath -Force | Out-Null }
+# Setup Logs & Directories
+try {
+    if (!(Test-Path $ExternalStorePath)) { $null = New-Item -ItemType Directory -Path $ExternalStorePath -Force }
+    if (!(Test-Path $LogPath)) { $null = New-Item -ItemType Directory -Path $LogPath -Force }
+} catch {
+    Write-Error "CRITICAL: Could not create destination directories. $_"
+}
 
 $MainLog = "$LogPath\${Mode}_Log_$RunTimeStamp.txt"
 Add-Content -Path $MainLog -Value "Operation: $Mode | Date: $(Get-Date)"
